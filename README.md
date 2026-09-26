@@ -1,7 +1,7 @@
 # untitled
 
 Reactive Spring Boot 4.1 service (Java 25, Spring WebFlux) with Actuator health probes, a
-generated OpenAPI 3.1 spec, ECS JSON logs, Prometheus metrics, a CycloneDX SBOM, HTTP Basic security
+generated OpenAPI 3.1 spec, ECS JSON logs, a runtime-toggleable HTTP access log, Prometheus metrics, a CycloneDX SBOM, HTTP Basic security
 and enforced test coverage.
 
 ## Requirements
@@ -84,6 +84,8 @@ drift and coverage checks.
 | `GET /actuator/health/readiness` | 8081 | public; lists components, no details |
 | `GET /actuator/info` | 8081 | public |
 | `GET /actuator/prometheus` | 8081 | public; Prometheus scrape format |
+| `GET /actuator/loggers` | 8081 | HTTP Basic; lists loggers and their levels |
+| `GET, POST /actuator/loggers/{name}` | 8081 | HTTP Basic; read a logger's level, or set it with a JSON body (`204`) |
 | `GET /actuator/sbom` | 8081 | HTTP Basic; lists SBOM ids |
 | `GET /actuator/sbom/application` | 8081 | HTTP Basic; CycloneDX JSON |
 
@@ -99,6 +101,10 @@ curl -u "$APP_SECURITY_USERNAME:$APP_SECURITY_PASSWORD" 'http://localhost:8080/a
 
 Invalid input (`name` missing, blank or longer than 100 characters) returns `400` with an
 `application/problem+json` body.
+
+Every response on both ports carries an `X-Request-Id` header. A caller's own `X-Request-Id` is
+reused when it matches `[A-Za-z0-9._:-]{1,128}`; otherwise the service generates a UUID. It is the
+`http.request.id` of the request's access log line (see [Access log](#access-log)).
 
 ## SBOM
 
@@ -130,6 +136,34 @@ logs for a single run without it, set the format to empty:
 java -jar target/untitled-*.jar --logging.structured.format.console=
 LOGGING_STRUCTURED_FORMAT_CONSOLE= java -jar target/untitled-*.jar
 ```
+
+### Access log
+
+The service can log one line per HTTP request on both ports (8080 and 8081), including rejected
+ones (401, 400) and health probes and Prometheus scrapes. A line holds `http.request.method`,
+`url.path`, `url.query` (only when there is one), `http.response.status_code`, `event.duration`
+(nanoseconds) and `http.request.id` (the `X-Request-Id` response header). Headers, cookies, bodies
+and the user are never logged, so neither are credentials; query strings are, so keep secrets out
+of them.
+
+It is written by the `http.access` logger at `INFO`, and that logger is at `WARN` by default, so the
+access log is off. Turn it on and off while the service runs, without a restart, through the
+`loggers` endpoint on 8081 (HTTP Basic):
+
+```sh
+# on
+curl -u "$APP_SECURITY_USERNAME:$APP_SECURITY_PASSWORD" -H 'Content-Type: application/json' \
+  -d '{"configuredLevel":"INFO"}' http://localhost:8081/actuator/loggers/http.access
+# off again (null clears the runtime level; http.access then inherits WARN from "http")
+curl -u "$APP_SECURITY_USERNAME:$APP_SECURITY_PASSWORD" -H 'Content-Type: application/json' \
+  -d '{"configuredLevel":null}' http://localhost:8081/actuator/loggers/http.access
+```
+
+The change applies only to the instance whose 8081 port you call, so with several replicas call
+each one's management port directly (not through a load balancer), and it lasts until the process
+restarts. To start with it on, pass
+`--logging.level.http.access=INFO` (or set `LOGGING_LEVEL_HTTP_ACCESS=INFO`). The same endpoint can
+change any other logger's level too, for example `org.springframework.web` to `DEBUG`.
 
 ## Formatting
 

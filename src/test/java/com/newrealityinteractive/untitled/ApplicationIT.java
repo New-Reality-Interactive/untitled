@@ -3,6 +3,8 @@ package com.newrealityinteractive.untitled;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -168,6 +170,84 @@ class ApplicationIT {
         .exchange()
         .expectStatus()
         .isNotFound();
+  }
+
+  @Test
+  void loggersRequireAuthentication() {
+    management
+        .get()
+        .uri("/actuator/loggers/http.access")
+        .exchange()
+        .expectStatus()
+        .isUnauthorized();
+    management
+        .post()
+        .uri("/actuator/loggers/http.access")
+        .contentType(MediaType.APPLICATION_JSON)
+        .bodyValue(Map.of("configuredLevel", "INFO"))
+        .exchange()
+        .expectStatus()
+        .isUnauthorized();
+  }
+
+  @Test
+  void accessLogIsOffByDefaultAndTogglesAtRuntime() {
+    try {
+      assertAccessLogLevel("WARN");
+      setAccessLogLevel("INFO");
+      assertAccessLogLevel("INFO");
+      setAccessLogLevel("WARN");
+      assertAccessLogLevel("WARN");
+      setAccessLogLevel("INFO");
+    } finally {
+      setAccessLogLevel(null);
+    }
+    assertAccessLogLevel("WARN");
+  }
+
+  private void setAccessLogLevel(String level) {
+    Map<String, String> body = new HashMap<>();
+    body.put("configuredLevel", level);
+    management
+        .post()
+        .uri("/actuator/loggers/http.access")
+        .headers(headers -> headers.setBasicAuth(USERNAME, PASSWORD))
+        .contentType(MediaType.APPLICATION_JSON)
+        .bodyValue(body)
+        .exchange()
+        .expectStatus()
+        .isNoContent();
+  }
+
+  private void assertAccessLogLevel(String level) {
+    management
+        .get()
+        .uri("/actuator/loggers/http.access")
+        .headers(headers -> headers.setBasicAuth(USERNAME, PASSWORD))
+        .exchange()
+        .expectStatus()
+        .isOk()
+        .expectBody()
+        .jsonPath("$.effectiveLevel")
+        .isEqualTo(level);
+  }
+
+  @Test
+  void bothPortsReturnARequestIdAndReuseAWellFormedOne() {
+    app.get()
+        .uri("/api/v1/greetings?name=Ada")
+        .exchange()
+        .expectStatus()
+        .isUnauthorized()
+        .expectHeader()
+        .exists("X-Request-Id");
+    management
+        .get()
+        .uri("/actuator/health/liveness")
+        .header("X-Request-Id", "it-request-1")
+        .exchange()
+        .expectHeader()
+        .valueEquals("X-Request-Id", "it-request-1");
   }
 
   @Test

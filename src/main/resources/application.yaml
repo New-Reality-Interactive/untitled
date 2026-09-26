@@ -8,6 +8,12 @@ logging:
   structured:
     format:
       console: ecs
+  level:
+    # HTTP access log (AccessLogFilter): off by default. Set to INFO at runtime through
+    # POST /actuator/loggers/http.access to turn it on without a restart. The parent "http" is WARN
+    # too, so resetting http.access (configuredLevel null) turns it off instead of inheriting INFO.
+    http: WARN
+    http.access: WARN
 
 server:
   port: 8080
@@ -22,7 +28,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health, info, prometheus, sbom
+        include: health, info, loggers, prometheus, sbom
   metrics:
     tags:
       application: ${spring.application.name}
