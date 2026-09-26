@@ -1,5 +1,0 @@
-# Keep script line endings correct regardless of core.autocrlf
-* text=auto
-mvnw text eol=lf
-*.sh text eol=lf
-*.cmd text eol=crlf

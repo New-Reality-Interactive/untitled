@@ -1,6 +1,0 @@
-# Loaded only by the integration-test build: spring-boot:start activates the "it" profile and adds
-# the test output directory as a config location. Test resources never reach the packaged jar.
-app:
-  security:
-    username: it-user
-    password: it-password
