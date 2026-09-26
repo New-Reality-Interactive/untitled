@@ -145,9 +145,7 @@ class AccessLogFilterTest {
     StepVerifier.create(exchange.getResponse().getBodyAsString())
         .expectNext("{\"message\":\"Hello, Ada!\"}")
         .verifyComplete();
-    assertThat(onlyLine())
-        .containsEntry("http.response.body.content", "{\"message\":\"Hello, Ada!\"}")
-        .containsEntry("http.response.body.bytes", 25L);
+    assertThat(onlyLine()).containsEntry("http.response.body", "{\"message\":\"Hello, Ada!\"}");
     assertThat(appender.list.getFirst().getFormattedMessage())
         .contains(" X-Request-Id=ada-test-001 request.header={")
         .endsWith("} response.body={\"message\":\"Hello, Ada!\"}")
@@ -197,9 +195,7 @@ class AccessLogFilterTest {
     StepVerifier.create(exchange.getResponse().getBodyAsString())
         .expectNext("{\"configuredLevel\":\"INFO\"}")
         .verifyComplete();
-    assertThat(onlyLine())
-        .containsEntry("http.request.body.content", "{\"configuredLevel\":\"INFO\"}")
-        .containsEntry("http.request.body.bytes", 26L);
+    assertThat(onlyLine()).containsEntry("http.request.body", "{\"configuredLevel\":\"INFO\"}");
     assertThat(appender.list.getFirst().getFormattedMessage())
         .contains(" X-Request-Id=ada-test-001 request.header={")
         .endsWith(
@@ -215,9 +211,7 @@ class AccessLogFilterTest {
             .contentType(MediaType.APPLICATION_FORM_URLENCODED)
             .body("password=secret"));
 
-    assertThat(onlyLine())
-        .doesNotContainKey("http.request.body.content")
-        .doesNotContainKey("http.request.body.bytes");
+    assertThat(onlyLine()).doesNotContainKey("http.request.body");
   }
 
   @Test
@@ -229,7 +223,7 @@ class AccessLogFilterTest {
         .bodyValue("{\"configuredLevel\":\"INFO\"}")
         .exchange();
 
-    assertThat(onlyLine()).doesNotContainKey("http.request.body.content");
+    assertThat(onlyLine()).doesNotContainKey("http.request.body");
   }
 
   @Test
@@ -241,7 +235,7 @@ class AccessLogFilterTest {
 
     Object content =
         appender.list.getFirst().getKeyValuePairs().stream()
-            .filter(pair -> pair.key.equals("http.response.body.content"))
+            .filter(pair -> pair.key.equals("http.response.body"))
             .findFirst()
             .orElseThrow()
             .value;
@@ -255,7 +249,7 @@ class AccessLogFilterTest {
   void logsInvalidOrCutJsonBodiesAsStrings() {
     respond(MockServerHttpRequest.get("/broken").build(), MediaType.APPLICATION_JSON, "{\"a\":");
 
-    assertThat(onlyLine()).containsEntry("http.response.body.content", "{\"a\":");
+    assertThat(onlyLine()).containsEntry("http.response.body", "{\"a\":");
   }
 
   @Test
@@ -265,7 +259,7 @@ class AccessLogFilterTest {
         MediaType.APPLICATION_PROBLEM_JSON,
         "{\"status\":404}");
 
-    assertThat(onlyLine()).containsEntry("http.response.body.content", "{\"status\":404}");
+    assertThat(onlyLine()).containsEntry("http.response.body", "{\"status\":404}");
   }
 
   @Test
@@ -275,21 +269,18 @@ class AccessLogFilterTest {
         MediaType.TEXT_PLAIN,
         "jvm_threads_live 42");
 
-    assertThat(onlyLine())
-        .doesNotContainKey("http.response.body.content")
-        .doesNotContainKey("http.response.body.bytes");
+    assertThat(onlyLine()).doesNotContainKey("http.response.body");
     assertThat(appender.list.getFirst().getFormattedMessage()).doesNotContain("body=");
   }
 
   @Test
-  void cutsLargeJsonBodiesButCountsEveryByte() {
+  void logsLargeJsonBodiesCutAsStrings() {
     String large = "[\"" + "x".repeat(AccessLogFilter.MAX_BODY_BYTES) + "\"]";
     respond(MockServerHttpRequest.get("/big").build(), MediaType.APPLICATION_JSON, large);
 
     Map<String, Object> fields = onlyLine();
-    assertThat((String) fields.get("http.response.body.content"))
+    assertThat((String) fields.get("http.response.body"))
         .isEqualTo(large.substring(0, AccessLogFilter.MAX_BODY_BYTES));
-    assertThat(fields).containsEntry("http.response.body.bytes", (long) large.length());
   }
 
   @Test

@@ -51,11 +51,12 @@ import tools.jackson.databind.json.JsonMapper;
  * request.body=<json> response.header=<json> response.body=<json>}); with a structured console
  * format, which writes them as fields, it is only {@code POST /path 200}.
  *
- * <p>JSON request and response bodies are logged as raw, compacted JSON, so structured formats nest
- * them as objects; a body that is not valid JSON, or was cut at {@value #MAX_BODY_BYTES} bytes, is
- * logged as a string instead. Other bodies (form data, Prometheus text, HTML, streams) are not. A
- * request body is only seen when the application reads it, so requests rejected before that (a 401,
- * for example) log none.
+ * <p>JSON request and response bodies are logged under {@code http.request.body} and {@code
+ * http.response.body} (not ECS's {@code body.content}) as raw, compacted JSON, so structured
+ * formats nest them as objects; a body that is not valid JSON, or was cut at {@value
+ * #MAX_BODY_BYTES} bytes, is logged as a string instead. Other bodies (form data, Prometheus text,
+ * HTML, streams) are not. A request body is only seen when the application reads it, so requests
+ * rejected before that (a 401, for example) log none.
  *
  * <p>Every request and response header is logged under {@code http.request.header} and {@code
  * http.response.header}, as an object from lowercased header name to its values, except that the
@@ -179,17 +180,11 @@ public class AccessLogFilter implements WebFilter, Ordered {
             .addKeyValue("http.response.header", responseHeaders);
     Object requestContent = requestBody.body.content();
     if (requestContent != null) {
-      event =
-          event
-              .addKeyValue("http.request.body.content", requestContent)
-              .addKeyValue("http.request.body.bytes", requestBody.body.bytes());
+      event = event.addKeyValue("http.request.body", requestContent);
     }
     Object responseContent = responseBody.body.content();
     if (responseContent != null) {
-      event =
-          event
-              .addKeyValue("http.response.body.content", responseContent)
-              .addKeyValue("http.response.body.bytes", responseBody.body.bytes());
+      event = event.addKeyValue("http.response.body", responseContent);
     }
     String statusText = status != null ? String.valueOf(status.value()) : "-";
     if (!plainText) {
@@ -276,7 +271,7 @@ public class AccessLogFilter implements WebFilter, Ordered {
 
   /**
    * Copies the first {@value #MAX_BODY_BYTES} bytes of a JSON body as it passes, without consuming
-   * it, and counts every byte.
+   * it, and counts every byte to tell whether it was cut.
    */
   static final class BodyCopy {
 
@@ -316,10 +311,6 @@ public class AccessLogFilter implements WebFilter, Ordered {
       } catch (JacksonException notJson) {
         return text;
       }
-    }
-
-    synchronized long bytes() {
-      return bytes;
     }
   }
 }

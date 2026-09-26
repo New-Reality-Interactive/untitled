@@ -149,12 +149,12 @@ ones (401, 400) and health probes and Prometheus scrapes. A line holds:
 - `http.request.header` and `http.response.header`: every header as
   `{"name": ["value", ...]}`, with names lowercased. The values of `Authorization`,
   `Proxy-Authorization`, `Cookie` and `Set-Cookie` are replaced by `[REDACTED]`.
-- `http.request.body.content` / `http.response.body.content` and `.bytes`, for JSON bodies only
-  (`application/json` and `+json` types such as problem details). A body that parses is logged as
-  raw, compacted JSON (with ECS, a nested object); one cut at 8 KiB or invalid is logged as a
-  string. `.bytes` is the full size. Form data, Prometheus text, HTML and streams are not logged,
-  and a request body appears only when the application reads it, so a request rejected with 401
-  logs none.
+- `http.request.body` / `http.response.body`, for JSON bodies only (`application/json` and `+json`
+  types such as problem details). A body that parses is logged as raw, compacted JSON (with ECS, a
+  nested object); one cut at 8 KiB or invalid is logged as a string. Form data, Prometheus text,
+  HTML and streams are not logged, and a request body appears only when the application reads it,
+  so a request rejected with 401 logs none. These fields differ from ECS, which puts the body in
+  `body.content` next to `body.bytes`.
 
 With ECS the message is only a summary (`POST /actuator/loggers/x 204`). The plain-text console of
 the `local` profile drops the separate fields, so there the message repeats all of them:
