@@ -103,7 +103,10 @@ class AccessLogFilterTest {
         .containsEntry("http.request.id", requestId);
     assertThat((Long) fields.get("event.duration")).isPositive();
     assertThat(appender.list.getFirst().getFormattedMessage())
-        .matches("GET /api/v1/greetings\\?name=Ada 200 \\d+\\.\\d{3}ms X-Request-Id=" + requestId);
+        .matches(
+            "GET /api/v1/greetings\\?name=Ada 200 \\d+\\.\\d{3}ms X-Request-Id="
+                + requestId
+                + " request.header=\\{.*\\}");
   }
 
   /** Runs the filter directly: the mock response consumes the whole body before completing. */
@@ -146,7 +149,8 @@ class AccessLogFilterTest {
         .containsEntry("http.response.body.content", "{\"message\":\"Hello, Ada!\"}")
         .containsEntry("http.response.body.bytes", 25L);
     assertThat(appender.list.getFirst().getFormattedMessage())
-        .endsWith(" X-Request-Id=ada-test-001 response.body={\"message\":\"Hello, Ada!\"}");
+        .contains(" X-Request-Id=ada-test-001 request.header={")
+        .endsWith("} response.body={\"message\":\"Hello, Ada!\"}");
   }
 
   @Test
@@ -194,8 +198,9 @@ class AccessLogFilterTest {
         .containsEntry("http.request.body.content", "{\"configuredLevel\":\"INFO\"}")
         .containsEntry("http.request.body.bytes", 26L);
     assertThat(appender.list.getFirst().getFormattedMessage())
+        .contains(" X-Request-Id=ada-test-001 request.header={")
         .endsWith(
-            " X-Request-Id=ada-test-001 request.body={\"configuredLevel\":\"INFO\"}"
+            "} request.body={\"configuredLevel\":\"INFO\"}"
                 + " response.body={\"configuredLevel\":\"INFO\"}");
   }
 
@@ -293,7 +298,7 @@ class AccessLogFilterTest {
   }
 
   @Test
-  void logsRejectedRequestsWithoutHeadersOrCookies() {
+  void redactsCredentialHeadersAndCookies() {
     client(respondWith(HttpStatus.UNAUTHORIZED))
         .get()
         .uri("/api/v1/greetings?name=Ada")
@@ -311,6 +316,31 @@ class AccessLogFilterTest {
         .doesNotContain("Basic")
         .doesNotContain("c2VjcmV0") // base64 of "secret"
         .doesNotContain("secret");
+    assertThat(fields(event).get("http.request.header").toString())
+        .contains("\"Authorization\":[\"[REDACTED]\"]")
+        .contains("\"Proxy-Authorization\":[\"[REDACTED]\"]")
+        .contains("\"Cookie\":[\"[REDACTED]\"]");
+  }
+
+  @Test
+  void logsEveryRequestHeaderWithAllItsValues() {
+    MockServerWebExchange exchange =
+        MockServerWebExchange.from(
+            MockServerHttpRequest.get("/api/v1/greetings")
+                .header(AccessLogFilter.REQUEST_ID_HEADER, "ada-test-001")
+                .header(HttpHeaders.ACCEPT, "application/json", "text/plain")
+                .header("x-custom", "one"));
+    StepVerifier.create(filter.filter(exchange, ignored -> Mono.empty())).verifyComplete();
+
+    assertThat(onlyLine())
+        .containsEntry(
+            "http.request.header",
+            "{\"X-Request-Id\":[\"ada-test-001\"],"
+                + "\"Accept\":[\"application/json\",\"text/plain\"],"
+                + "\"x-custom\":[\"one\"]}");
+    assertThat(appender.list.getFirst().getFormattedMessage())
+        .contains(
+            " X-Request-Id=ada-test-001 request.header={\"X-Request-Id\":[\"ada-test-001\"],");
   }
 
   @Test
