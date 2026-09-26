@@ -84,12 +84,6 @@
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-configuration-processor</artifactId>
-            <optional>true</optional>
-        </dependency>
-
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
@@ -191,7 +185,10 @@
                 </executions>
             </plugin>
 
-            <!-- JDK 23+ no longer discovers annotation processors on the classpath; declare it explicitly. -->
+            <!--
+              JDK 23+ no longer discovers annotation processors on the classpath; declare it explicitly.
+              It is deliberately not a <dependency>: that would list it in the SBOM although the jar does not ship it.
+            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -231,6 +228,15 @@
                 <configuration>
                     <failOnNoGitDirectory>false</failOnNoGitDirectory>
                 </configuration>
+            </plugin>
+
+            <!--
+              The Boot parent configures the execution: a CycloneDX JSON SBOM of the non-test dependencies,
+              written at generate-resources to META-INF/sbom/application.cdx.json and served by /actuator/sbom.
+            -->
+            <plugin>
+                <groupId>org.cyclonedx</groupId>
+                <artifactId>cyclonedx-maven-plugin</artifactId>
             </plugin>
 
             <plugin>

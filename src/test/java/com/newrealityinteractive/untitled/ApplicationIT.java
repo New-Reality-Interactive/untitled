@@ -98,6 +98,67 @@ class ApplicationIT {
   }
 
   @Test
+  void sbomRequiresAuthentication() {
+    management.get().uri("/actuator/sbom").exchange().expectStatus().isUnauthorized();
+    management.get().uri("/actuator/sbom/application").exchange().expectStatus().isUnauthorized();
+  }
+
+  @Test
+  void sbomListsTheApplicationSbom() {
+    management
+        .get()
+        .uri("/actuator/sbom")
+        .headers(headers -> headers.setBasicAuth(USERNAME, PASSWORD))
+        .exchange()
+        .expectStatus()
+        .isOk()
+        .expectBody()
+        .jsonPath("$.ids[?(@ == 'application')]")
+        .exists();
+  }
+
+  @Test
+  void sbomServesCycloneDxWithoutTestOrCompileOnlyDependencies() {
+    management
+        .mutate()
+        // The SBOM (about 290 KB) is larger than the default 256 KB buffer limit.
+        .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(4 * 1024 * 1024))
+        .build()
+        .get()
+        .uri("/actuator/sbom/application")
+        .headers(headers -> headers.setBasicAuth(USERNAME, PASSWORD))
+        .exchange()
+        .expectStatus()
+        .isOk()
+        .expectHeader()
+        .contentTypeCompatibleWith("application/vnd.cyclonedx+json")
+        .expectBody()
+        .jsonPath("$.bomFormat")
+        .isEqualTo("CycloneDX")
+        .jsonPath("$.metadata.component.name")
+        .isEqualTo("untitled")
+        .jsonPath("$.components[?(@.name == 'spring-boot')]")
+        .exists()
+        .jsonPath(
+            "$.components[?(@.name =~ /junit-.*|mockito-.*|assertj-.*|reactor-test|spring-test"
+                + "|spring-security-test|spring-boot-configuration-processor/)]")
+        .doesNotExist()
+        .jsonPath("$.components[?(@.scope == 'optional')]")
+        .doesNotExist();
+  }
+
+  @Test
+  void unknownSbomIsNotFound() {
+    management
+        .get()
+        .uri("/actuator/sbom/nope")
+        .headers(headers -> headers.setBasicAuth(USERNAME, PASSWORD))
+        .exchange()
+        .expectStatus()
+        .isNotFound();
+  }
+
+  @Test
   void unexposedActuatorEndpointsRequireAuthenticationAndStayUnexposed() {
     management.get().uri("/actuator/env").exchange().expectStatus().isUnauthorized();
     management
