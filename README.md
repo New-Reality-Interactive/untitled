@@ -140,11 +140,34 @@ LOGGING_STRUCTURED_FORMAT_CONSOLE= java -jar target/untitled-*.jar
 ### Access log
 
 The service can log one line per HTTP request on both ports (8080 and 8081), including rejected
-ones (401, 400) and health probes and Prometheus scrapes. A line holds `http.request.method`,
-`url.path`, `url.query` (only when there is one), `http.response.status_code`, `event.duration`
-(nanoseconds) and `http.request.id` (the `X-Request-Id` response header). Headers, cookies, bodies
-and the user are never logged, so neither are credentials; query strings are, so keep secrets out
-of them.
+ones (401, 400) and health probes and Prometheus scrapes. A line holds:
+
+- `http.request.method`, `url.path`, `url.query` (only when there is one),
+  `http.response.status_code` and `event.duration` (nanoseconds).
+- `http.request.id`: the `X-Request-Id` response header, which is the caller's value when it sent a
+  well-formed one and a generated UUID otherwise.
+- `http.request.header` and `http.response.header`: every header as
+  `{"name": ["value", ...]}`, with names lowercased. The values of `Authorization`,
+  `Proxy-Authorization`, `Cookie` and `Set-Cookie` are replaced by `[REDACTED]`.
+- `http.request.body` / `http.response.body`: the body as raw, compacted JSON (with ECS, a nested
+  object), only for JSON content types (`application/json` and `+json` types such as problem
+  details) and only when it is a JSON object or an array of objects of at most 8 KiB. Anything else
+  (a larger body, invalid JSON, a single value, an array of values, form data, Prometheus text,
+  HTML, streams) is left out, because a log store maps a field as either an object or a value and
+  would reject the whole line. A request body appears only when the application reads it, so a
+  request rejected with 401 logs none. These fields differ from ECS, which puts the body in
+  `body.content` next to `body.bytes`.
+
+With ECS the message is only a summary (`POST /actuator/loggers/x 204`). The plain-text console of
+the `local` profile drops the separate fields, so there the message repeats all of them:
+
+```text
+GET /api/v1/greetings?name=Ada 200 80.379ms X-Request-Id=ada-test-001 request.header={"host":["localhost:8080"],"authorization":["[REDACTED]"]} response.header={"x-request-id":["ada-test-001"],"content-type":["application/json"]} response.body={"message":"Hello, Ada!"}
+```
+
+(`request.body=` follows `request.header=` when the request has one.) Credentials are redacted and
+the user is not logged; query strings, other headers and JSON bodies are, so keep secrets out of
+them.
 
 It is written by the `http.access` logger at `INFO`, and that logger is at `WARN` by default, so the
 access log is off. Turn it on and off while the service runs, without a restart, through the
@@ -164,6 +187,30 @@ each one's management port directly (not through a load balancer), and it lasts 
 restarts. To start with it on, pass
 `--logging.level.http.access=INFO` (or set `LOGGING_LEVEL_HTTP_ACCESS=INFO`). The same endpoint can
 change any other logger's level too, for example `org.springframework.web` to `DEBUG`.
+
+#### Elasticsearch mapping
+
+[`deploy/elasticsearch/untitled-http-access.component-template.json`](deploy/elasticsearch/untitled-http-access.component-template.json)
+maps the fields that vary with each request:
+
+- `http.request.header` and `http.response.header` are `flattened` (one field each; search by
+  header, e.g. `http.request.header.user-agent: curl*`), since callers choose the header names.
+- Body keys get typed fields so range queries work (e.g. `http.response.body.price >= 10`):
+  numbers are `double`, date strings `date`, other strings and booleans `keyword`. Nested objects
+  are stored as dotted keys (`subobjects: false`), so `error` can be a string in one body and an
+  object in another. A value whose type differs from the key's mapping (`"UP"` where `404` came
+  first) is skipped, not indexed, and stays in `_source`; the first type seen for a key in an index
+  wins.
+- Past the index's field limit, new keys are skipped instead of rejecting the line
+  (`index.mapping.total_fields.ignore_dynamic_beyond_limit`).
+
+Install it and add `untitled-http-access` to the `composed_of` list of the index template your
+logs use:
+
+```sh
+curl -X PUT -H 'Content-Type: application/json' "$ES_URL/_component_template/untitled-http-access" \
+  --data-binary @deploy/elasticsearch/untitled-http-access.component-template.json
+```
 
 ## Formatting
 

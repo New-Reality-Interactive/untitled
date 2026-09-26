@@ -6,6 +6,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -14,8 +15,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.KeyValuePair;
+import org.springframework.boot.json.WritableJson;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -24,6 +27,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.WebFilterChain;
 import org.springframework.web.server.WebHandler;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -31,7 +35,7 @@ class AccessLogFilterTest {
 
   private final Logger logger = (Logger) LoggerFactory.getLogger("http.access");
   private final ListAppender<ILoggingEvent> appender = new ListAppender<>();
-  private final AccessLogFilter filter = new AccessLogFilter();
+  private final AccessLogFilter filter = new AccessLogFilter("");
   private Level originalLevel;
 
   @BeforeEach
@@ -68,7 +72,13 @@ class AccessLogFilterTest {
 
   private static Map<String, Object> fields(ILoggingEvent event) {
     List<KeyValuePair> pairs = event.getKeyValuePairs();
-    return pairs.stream().collect(Collectors.toMap(pair -> pair.key, pair -> pair.value));
+    // Raw JSON bodies compare by their text.
+    return pairs.stream()
+        .collect(
+            Collectors.toMap(
+                pair -> pair.key,
+                pair ->
+                    pair.value instanceof AccessLogFilter.RawJson raw ? raw.json() : pair.value));
   }
 
   @Test
@@ -93,7 +103,196 @@ class AccessLogFilterTest {
         .containsEntry("http.request.id", requestId);
     assertThat((Long) fields.get("event.duration")).isPositive();
     assertThat(appender.list.getFirst().getFormattedMessage())
+        .matches(
+            "GET /api/v1/greetings\\?name=Ada 200 \\d+\\.\\d{3}ms X-Request-Id="
+                + requestId
+                + " request.header=\\{.*\\} response.header=\\{.*\\}");
+  }
+
+  /** Runs the filter directly: the mock response consumes the whole body before completing. */
+  private MockServerWebExchange respond(
+      MockServerHttpRequest request, MediaType type, String... chunks) {
+    MockServerWebExchange exchange = MockServerWebExchange.from(request);
+    WebFilterChain writesChunks =
+        filtered -> {
+          filtered.getResponse().getHeaders().setContentType(type);
+          return filtered
+              .getResponse()
+              .writeWith(
+                  Flux.fromArray(chunks)
+                      .map(
+                          chunk ->
+                              filtered
+                                  .getResponse()
+                                  .bufferFactory()
+                                  .wrap(chunk.getBytes(StandardCharsets.UTF_8))));
+        };
+    StepVerifier.create(filter.filter(exchange, writesChunks)).verifyComplete();
+    return exchange;
+  }
+
+  @Test
+  void logsJsonResponseBodiesAndStillSendsThem() {
+    MockServerWebExchange exchange =
+        respond(
+            MockServerHttpRequest.get("/api/v1/greetings?name=Ada")
+                .header(AccessLogFilter.REQUEST_ID_HEADER, "ada-test-001")
+                .build(),
+            MediaType.APPLICATION_JSON,
+            "{\"message\":",
+            "\"Hello, Ada!\"}");
+
+    StepVerifier.create(exchange.getResponse().getBodyAsString())
+        .expectNext("{\"message\":\"Hello, Ada!\"}")
+        .verifyComplete();
+    assertThat(onlyLine()).containsEntry("http.response.body", "{\"message\":\"Hello, Ada!\"}");
+    assertThat(appender.list.getFirst().getFormattedMessage())
+        .contains(" X-Request-Id=ada-test-001 request.header={")
+        .endsWith("} response.body={\"message\":\"Hello, Ada!\"}")
+        .contains(
+            " response.header={\"x-request-id\":[\"ada-test-001\"],"
+                + "\"content-type\":[\"application/json\"]}");
+  }
+
+  @Test
+  void keepsTheMessageShortWhenTheConsoleIsStructured() {
+    WebTestClient.bindToWebHandler(respondWith(HttpStatus.OK))
+        .webFilter(new AccessLogFilter("ecs"))
+        .build()
+        .get()
+        .uri("/api/v1/greetings?name=Ada")
+        .exchange();
+
+    assertThat(onlyLine())
+        .containsEntry("url.query", "name=Ada")
+        .containsKey("http.request.id")
+        .containsKey("event.duration");
+    assertThat(appender.list.getFirst().getFormattedMessage())
         .isEqualTo("GET /api/v1/greetings 200");
+  }
+
+  /** Reads the request body and echoes it back as JSON, as a controller taking a body would. */
+  private MockServerWebExchange echo(MockServerHttpRequest request) {
+    MockServerWebExchange exchange = MockServerWebExchange.from(request);
+    WebFilterChain echoes =
+        filtered -> {
+          filtered.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
+          return filtered.getResponse().writeWith(filtered.getRequest().getBody());
+        };
+    StepVerifier.create(filter.filter(exchange, echoes)).verifyComplete();
+    return exchange;
+  }
+
+  @Test
+  void logsJsonRequestBodiesAndStillPassesThemOn() {
+    MockServerWebExchange exchange =
+        echo(
+            MockServerHttpRequest.post("/actuator/loggers/http.access")
+                .header(AccessLogFilter.REQUEST_ID_HEADER, "ada-test-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"configuredLevel\":\"INFO\"}"));
+
+    StepVerifier.create(exchange.getResponse().getBodyAsString())
+        .expectNext("{\"configuredLevel\":\"INFO\"}")
+        .verifyComplete();
+    assertThat(onlyLine()).containsEntry("http.request.body", "{\"configuredLevel\":\"INFO\"}");
+    assertThat(appender.list.getFirst().getFormattedMessage())
+        .contains(" X-Request-Id=ada-test-001 request.header={")
+        .endsWith(
+            "} request.body={\"configuredLevel\":\"INFO\"} response.header={"
+                + "\"x-request-id\":[\"ada-test-001\"],\"content-type\":[\"application/json\"]}"
+                + " response.body={\"configuredLevel\":\"INFO\"}");
+  }
+
+  @Test
+  void doesNotLogNonJsonRequestBodies() {
+    echo(
+        MockServerHttpRequest.post("/form")
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .body("password=secret"));
+
+    assertThat(onlyLine()).doesNotContainKey("http.request.body");
+  }
+
+  @Test
+  void logsNoRequestBodyWhenTheApplicationDoesNotReadIt() {
+    client(respondWith(HttpStatus.UNAUTHORIZED))
+        .post()
+        .uri("/actuator/loggers/http.access")
+        .contentType(MediaType.APPLICATION_JSON)
+        .bodyValue("{\"configuredLevel\":\"INFO\"}")
+        .exchange();
+
+    assertThat(onlyLine()).doesNotContainKey("http.request.body");
+  }
+
+  @Test
+  void logsValidJsonBodiesAsCompactRawJson() {
+    respond(
+        MockServerHttpRequest.get("/pretty").build(),
+        MediaType.APPLICATION_JSON,
+        "{\n  \"price\" : 1.10,\n  \"tags\" : [ \"a\" ]\n}");
+
+    Object content =
+        appender.list.getFirst().getKeyValuePairs().stream()
+            .filter(pair -> pair.key.equals("http.response.body"))
+            .findFirst()
+            .orElseThrow()
+            .value;
+    assertThat(appender.list).hasSize(1);
+    assertThat(content).isInstanceOf(AccessLogFilter.RawJson.class);
+    assertThat(((WritableJson) content).toJsonString())
+        .isEqualTo("{\"price\":1.10,\"tags\":[\"a\"]}");
+  }
+
+  @Test
+  void logsArraysOfObjects() {
+    respond(
+        MockServerHttpRequest.get("/list").build(),
+        MediaType.APPLICATION_JSON,
+        "[{\"a\":1},{\"a\":2}]",
+        "");
+
+    assertThat(onlyLine()).containsEntry("http.response.body", "[{\"a\":1},{\"a\":2}]");
+  }
+
+  @Test
+  void leavesOutBodiesThatAreNotAnObjectOrAnArrayOfObjects() {
+    for (String body : List.of("{\"a\":", "\"ok\"", "42", "[1,2,3]", "[{\"a\":1},2]")) {
+      appender.list.clear();
+      respond(MockServerHttpRequest.get("/").build(), MediaType.APPLICATION_JSON, body);
+      assertThat(onlyLine()).as(body).doesNotContainKey("http.response.body");
+      assertThat(appender.list.getFirst().getFormattedMessage()).as(body).doesNotContain("body=");
+    }
+  }
+
+  @Test
+  void logsJsonSuffixMediaTypesSuchAsProblemDetails() {
+    respond(
+        MockServerHttpRequest.get("/nope").build(),
+        MediaType.APPLICATION_PROBLEM_JSON,
+        "{\"status\":404}");
+
+    assertThat(onlyLine()).containsEntry("http.response.body", "{\"status\":404}");
+  }
+
+  @Test
+  void doesNotLogNonJsonResponseBodies() {
+    respond(
+        MockServerHttpRequest.get("/actuator/prometheus").build(),
+        MediaType.TEXT_PLAIN,
+        "jvm_threads_live 42");
+
+    assertThat(onlyLine()).doesNotContainKey("http.response.body");
+    assertThat(appender.list.getFirst().getFormattedMessage()).doesNotContain("body=");
+  }
+
+  @Test
+  void leavesOutBodiesCutAtTheLimit() {
+    String large = "{\"x\":\"" + "x".repeat(AccessLogFilter.MAX_BODY_BYTES) + "\"}";
+    respond(MockServerHttpRequest.get("/big").build(), MediaType.APPLICATION_JSON, large);
+
+    assertThat(onlyLine()).doesNotContainKey("http.response.body");
   }
 
   @Test
@@ -106,7 +305,7 @@ class AccessLogFilterTest {
   }
 
   @Test
-  void logsRejectedRequestsWithoutHeadersOrCookies() {
+  void redactsCredentialHeadersAndCookies() {
     client(respondWith(HttpStatus.UNAUTHORIZED))
         .get()
         .uri("/api/v1/greetings?name=Ada")
@@ -124,6 +323,56 @@ class AccessLogFilterTest {
         .doesNotContain("Basic")
         .doesNotContain("c2VjcmV0") // base64 of "secret"
         .doesNotContain("secret");
+    assertThat(fields(event).get("http.request.header").toString())
+        .contains("\"authorization\":[\"[REDACTED]\"]")
+        .contains("\"proxy-authorization\":[\"[REDACTED]\"]")
+        .contains("\"cookie\":[\"[REDACTED]\"]");
+  }
+
+  @Test
+  void logsEveryRequestHeaderWithAllItsValues() {
+    MockServerWebExchange exchange =
+        MockServerWebExchange.from(
+            MockServerHttpRequest.get("/api/v1/greetings")
+                .header(AccessLogFilter.REQUEST_ID_HEADER, "ada-test-001")
+                .header(HttpHeaders.ACCEPT, "application/json", "text/plain")
+                .header("x-custom", "one"));
+    StepVerifier.create(filter.filter(exchange, ignored -> Mono.empty())).verifyComplete();
+
+    assertThat(onlyLine())
+        .containsEntry(
+            "http.request.header",
+            "{\"x-request-id\":[\"ada-test-001\"],"
+                + "\"accept\":[\"application/json\",\"text/plain\"],"
+                + "\"x-custom\":[\"one\"]}");
+    assertThat(appender.list.getFirst().getFormattedMessage())
+        .contains(
+            " X-Request-Id=ada-test-001 request.header={\"x-request-id\":[\"ada-test-001\"],");
+  }
+
+  @Test
+  void logsEveryResponseHeaderAndRedactsSetCookie() {
+    MockServerWebExchange exchange =
+        MockServerWebExchange.from(
+            MockServerHttpRequest.get("/").header(AccessLogFilter.REQUEST_ID_HEADER, "ada-1"));
+    StepVerifier.create(
+            filter.filter(
+                exchange,
+                filtered -> {
+                  HttpHeaders headers = filtered.getResponse().getHeaders();
+                  headers.add("Cache-Control", "no-cache");
+                  headers.add("Cache-Control", "no-store");
+                  headers.add(HttpHeaders.SET_COOKIE, "SESSION=cookie-secret");
+                  return filtered.getResponse().setComplete();
+                }))
+        .verifyComplete();
+
+    assertThat(onlyLine())
+        .containsEntry(
+            "http.response.header",
+            "{\"x-request-id\":[\"ada-1\"],"
+                + "\"cache-control\":[\"no-cache\",\"no-store\"],"
+                + "\"set-cookie\":[\"[REDACTED]\"]}");
   }
 
   @Test
