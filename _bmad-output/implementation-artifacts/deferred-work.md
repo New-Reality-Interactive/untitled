@@ -1,3 +1,0 @@
-- source_spec: none
-  summary: Add HTTP request/response logging for every endpoint on both ports (method, path, query, status, duration, correlation ID, as ECS JSON), with a flag that turns it on or off while the service is running, with no restart.
-  evidence: User request, 2026-09-26, while testing by hand. Reactor Netty's access log (`-Dreactor.netty.http.server.accessLogEnabled=true`) and WebFlux DEBUG logging both work, but the access-log flag is read only at startup. So a runtime toggle needs either a logging `WebFilter` whose logger level is changed through the actuator `loggers` endpoint (not exposed yet; it would need to be authenticated) or another runtime-refreshable flag. Must never log `Authorization` or other credential headers.
