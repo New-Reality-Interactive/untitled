@@ -93,7 +93,7 @@ class AccessLogFilterTest {
         .containsEntry("http.request.id", requestId);
     assertThat((Long) fields.get("event.duration")).isPositive();
     assertThat(appender.list.getFirst().getFormattedMessage())
-        .isEqualTo("GET /api/v1/greetings 200");
+        .matches("GET /api/v1/greetings\\?name=Ada 200 \\d+\\.\\d{3}ms id=" + requestId);
   }
 
   @Test

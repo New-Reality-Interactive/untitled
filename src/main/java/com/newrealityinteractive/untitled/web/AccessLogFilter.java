@@ -1,5 +1,6 @@
 package com.newrealityinteractive.untitled.web;
 
+import java.util.Locale;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
@@ -24,7 +25,9 @@ import reactor.core.publisher.SignalType;
  * Writes one access log line per exchange on both ports, as SLF4J key-value pairs with ECS names,
  * through the {@value #LOGGER_NAME} logger. The logger is at {@code WARN} by default; setting it to
  * {@code INFO} (for example through the actuator {@code loggers} endpoint) turns access logging on
- * without a restart. Headers, cookies, bodies and the principal are never logged.
+ * without a restart. The message repeats every field ({@code GET /path?query 200 12.345ms
+ * id=<request id>}) so plain-text console output, which drops key-value pairs, shows them too.
+ * Headers, cookies, bodies and the principal are never logged.
  *
  * <p>Every response carries an {@value #REQUEST_ID_HEADER} header: the caller's own value when it
  * is well formed, otherwise a generated UUID.
@@ -91,12 +94,13 @@ public class AccessLogFilter implements WebFilter, Ordered {
     ServerHttpRequest request = exchange.getRequest();
     String method = request.getMethod().name();
     String path = request.getPath().value();
+    long duration = System.nanoTime() - start;
     LoggingEventBuilder event =
         log.atInfo()
             .addKeyValue("http.request.method", method)
             .addKeyValue("url.path", path)
             .addKeyValue("http.request.id", requestId)
-            .addKeyValue("event.duration", System.nanoTime() - start);
+            .addKeyValue("event.duration", duration);
     String query = request.getURI().getRawQuery();
     if (query != null) {
       event = event.addKeyValue("url.query", query);
@@ -104,6 +108,13 @@ public class AccessLogFilter implements WebFilter, Ordered {
     if (status != null) {
       event = event.addKeyValue("http.response.status_code", status.value());
     }
-    event.log("{} {} {}", method, path, status != null ? status.value() : "-");
+    event.log(
+        "{} {}{} {} {}ms id={}",
+        method,
+        path,
+        query != null ? "?" + query : "",
+        status != null ? status.value() : "-",
+        String.format(Locale.ROOT, "%.3f", duration / 1_000_000.0),
+        requestId);
   }
 }

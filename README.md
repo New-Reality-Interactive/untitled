@@ -142,7 +142,9 @@ LOGGING_STRUCTURED_FORMAT_CONSOLE= java -jar target/untitled-*.jar
 The service can log one line per HTTP request on both ports (8080 and 8081), including rejected
 ones (401, 400) and health probes and Prometheus scrapes. A line holds `http.request.method`,
 `url.path`, `url.query` (only when there is one), `http.response.status_code`, `event.duration`
-(nanoseconds) and `http.request.id` (the `X-Request-Id` response header). Headers, cookies, bodies
+(nanoseconds) and `http.request.id` (the `X-Request-Id` response header). The message repeats them
+(`GET /api/v1/greetings?name=Ada 200 80.379ms id=ada-test-001`), so the plain-text console of the
+`local` profile, which drops the separate fields, shows them too. Headers, cookies, bodies
 and the user are never logged, so neither are credentials; query strings are, so keep secrets out
 of them.
 
