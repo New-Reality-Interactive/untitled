@@ -139,7 +139,7 @@ class AccessLogFilterTest {
         .containsEntry("http.response.body.content", "{\"message\":\"Hello, Ada!\"}")
         .containsEntry("http.response.body.bytes", 25L);
     assertThat(appender.list.getFirst().getFormattedMessage())
-        .endsWith(" X-Request-Id=ada-test-001 body={\"message\":\"Hello, Ada!\"}");
+        .endsWith(" X-Request-Id=ada-test-001 response.body={\"message\":\"Hello, Ada!\"}");
   }
 
   @Test
@@ -157,6 +157,63 @@ class AccessLogFilterTest {
         .containsKey("event.duration");
     assertThat(appender.list.getFirst().getFormattedMessage())
         .isEqualTo("GET /api/v1/greetings 200");
+  }
+
+  /** Reads the request body and echoes it back as JSON, as a controller taking a body would. */
+  private MockServerWebExchange echo(MockServerHttpRequest request) {
+    MockServerWebExchange exchange = MockServerWebExchange.from(request);
+    WebFilterChain echoes =
+        filtered -> {
+          filtered.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
+          return filtered.getResponse().writeWith(filtered.getRequest().getBody());
+        };
+    StepVerifier.create(filter.filter(exchange, echoes)).verifyComplete();
+    return exchange;
+  }
+
+  @Test
+  void logsJsonRequestBodiesAndStillPassesThemOn() {
+    MockServerWebExchange exchange =
+        echo(
+            MockServerHttpRequest.post("/actuator/loggers/http.access")
+                .header(AccessLogFilter.REQUEST_ID_HEADER, "ada-test-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"configuredLevel\":\"INFO\"}"));
+
+    StepVerifier.create(exchange.getResponse().getBodyAsString())
+        .expectNext("{\"configuredLevel\":\"INFO\"}")
+        .verifyComplete();
+    assertThat(onlyLine())
+        .containsEntry("http.request.body.content", "{\"configuredLevel\":\"INFO\"}")
+        .containsEntry("http.request.body.bytes", 26L);
+    assertThat(appender.list.getFirst().getFormattedMessage())
+        .endsWith(
+            " X-Request-Id=ada-test-001 request.body={\"configuredLevel\":\"INFO\"}"
+                + " response.body={\"configuredLevel\":\"INFO\"}");
+  }
+
+  @Test
+  void doesNotLogNonJsonRequestBodies() {
+    echo(
+        MockServerHttpRequest.post("/form")
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .body("password=secret"));
+
+    assertThat(onlyLine())
+        .doesNotContainKey("http.request.body.content")
+        .doesNotContainKey("http.request.body.bytes");
+  }
+
+  @Test
+  void logsNoRequestBodyWhenTheApplicationDoesNotReadIt() {
+    client(respondWith(HttpStatus.UNAUTHORIZED))
+        .post()
+        .uri("/actuator/loggers/http.access")
+        .contentType(MediaType.APPLICATION_JSON)
+        .bodyValue("{\"configuredLevel\":\"INFO\"}")
+        .exchange();
+
+    assertThat(onlyLine()).doesNotContainKey("http.request.body.content");
   }
 
   @Test

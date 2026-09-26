@@ -142,15 +142,18 @@ LOGGING_STRUCTURED_FORMAT_CONSOLE= java -jar target/untitled-*.jar
 The service can log one line per HTTP request on both ports (8080 and 8081), including rejected
 ones (401, 400) and health probes and Prometheus scrapes. A line holds `http.request.method`,
 `url.path`, `url.query` (only when there is one), `http.response.status_code`, `event.duration`
-(nanoseconds) and `http.request.id` (the `X-Request-Id` response header). JSON response bodies
-(`application/json` and `+json` types such as problem details) add `http.response.body.content`,
-cut at 8 KiB, and `http.response.body.bytes`, the full size; other bodies (Prometheus text, HTML,
-streams) are not logged. With ECS the message is only a summary (`GET /api/v1/greetings 200`). The
-plain-text console of the `local` profile drops the separate fields, so there the message repeats
-all of it
-(`GET /api/v1/greetings?name=Ada 200 80.379ms X-Request-Id=ada-test-001 body={"message":"Hello, Ada!"}`).
-Request headers, cookies, request bodies and the user are never logged, so neither are
-credentials; query strings and JSON response bodies are, so keep secrets out of them.
+(nanoseconds) and `http.request.id` (the `X-Request-Id` response header). JSON bodies
+(`application/json` and `+json` types such as problem details) add `http.request.body.content` /
+`http.response.body.content`, cut at 8 KiB, and `http.request.body.bytes` /
+`http.response.body.bytes`, the full size. Other bodies (form data, Prometheus text, HTML, streams)
+are not logged, and a request body appears only when the application reads it, so a request
+rejected with 401 logs none. With ECS the message is only a summary (`POST /actuator/loggers/x 204`).
+The plain-text console of the `local` profile drops the separate fields, so there the message
+repeats all of it
+(`GET /api/v1/greetings?name=Ada 200 80.379ms X-Request-Id=ada-test-001 response.body={"message":"Hello, Ada!"}`,
+with `request.body=` before `response.body=` when the request has one). Headers, cookies and the
+user are never logged, so neither are credentials; query strings and JSON bodies are, so keep
+secrets out of them.
 
 It is written by the `http.access` logger at `INFO`, and that logger is at `WARN` by default, so the
 access log is off. Turn it on and off while the service runs, without a restart, through the

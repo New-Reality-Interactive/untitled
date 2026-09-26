@@ -19,6 +19,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.http.server.reactive.ServerHttpResponseDecorator;
 import org.springframework.stereotype.Component;
@@ -36,12 +37,14 @@ import reactor.core.publisher.SignalType;
  * through the {@value #LOGGER_NAME} logger. The logger is at {@code WARN} by default; setting it to
  * {@code INFO} (for example through the actuator {@code loggers} endpoint) turns access logging on
  * without a restart. With a plain-text console, which drops key-value pairs, the message repeats
- * every field ({@code GET /path?query 200 12.345ms X-Request-Id=<id> body=<json>}); with a
- * structured console format, which writes them as fields, it is only {@code GET /path 200}.
+ * every field ({@code POST /path?query 200 12.345ms X-Request-Id=<id> request.body=<json>
+ * response.body=<json>}); with a structured console format, which writes them as fields, it is only
+ * {@code POST /path 200}.
  *
- * <p>JSON response bodies are logged, cut at {@value #MAX_BODY_BYTES} bytes; other response bodies
- * (Prometheus text, HTML, streams) are not. Request headers, cookies, request bodies and the
- * principal are never logged.
+ * <p>JSON request and response bodies are logged, cut at {@value #MAX_BODY_BYTES} bytes; other
+ * bodies (form data, Prometheus text, HTML, streams) are not. A request body is only seen when the
+ * application reads it, so requests rejected before that (a 401, for example) log none. Headers,
+ * cookies and the principal are never logged.
  *
  * <p>Every response carries an {@value #REQUEST_ID_HEADER} header: the caller's own value when it
  * is well formed, otherwise a generated UUID.
@@ -76,14 +79,23 @@ public class AccessLogFilter implements WebFilter, Ordered {
       return chain.filter(exchange);
     }
     long start = System.nanoTime();
-    BodyCapture body = new BodyCapture(exchange.getResponse());
+    RequestCapture request = new RequestCapture(exchange.getRequest());
+    ResponseCapture response = new ResponseCapture(exchange.getResponse());
     return chain
-        .filter(exchange.mutate().response(body).build())
-        .doOnError(error -> write(exchange, requestId, start, errorStatus(exchange, error), body))
+        .filter(exchange.mutate().request(request).response(response).build())
+        .doOnError(
+            error ->
+                write(exchange, requestId, start, errorStatus(exchange, error), request, response))
         .doFinally(
             signal -> {
               if (signal != SignalType.ON_ERROR) {
-                write(exchange, requestId, start, exchange.getResponse().getStatusCode(), body);
+                write(
+                    exchange,
+                    requestId,
+                    start,
+                    exchange.getResponse().getStatusCode(),
+                    request,
+                    response);
               }
             });
   }
@@ -116,7 +128,8 @@ public class AccessLogFilter implements WebFilter, Ordered {
       String requestId,
       long start,
       @Nullable HttpStatusCode status,
-      BodyCapture body) {
+      RequestCapture requestBody,
+      ResponseCapture responseBody) {
     ServerHttpRequest request = exchange.getRequest();
     String method = request.getMethod().name();
     String path = request.getPath().value();
@@ -134,12 +147,19 @@ public class AccessLogFilter implements WebFilter, Ordered {
     if (status != null) {
       event = event.addKeyValue("http.response.status_code", status.value());
     }
-    String content = body.content();
-    if (content != null) {
+    String requestContent = requestBody.body.content();
+    if (requestContent != null) {
       event =
           event
-              .addKeyValue("http.response.body.content", content)
-              .addKeyValue("http.response.body.bytes", body.bytes());
+              .addKeyValue("http.request.body.content", requestContent)
+              .addKeyValue("http.request.body.bytes", requestBody.body.bytes());
+    }
+    String responseContent = responseBody.body.content();
+    if (responseContent != null) {
+      event =
+          event
+              .addKeyValue("http.response.body.content", responseContent)
+              .addKeyValue("http.response.body.bytes", responseBody.body.bytes());
     }
     String statusText = status != null ? String.valueOf(status.value()) : "-";
     if (!plainText) {
@@ -147,7 +167,7 @@ public class AccessLogFilter implements WebFilter, Ordered {
       return;
     }
     event.log(
-        "{} {}{} {} {}ms {}={}{}",
+        "{} {}{} {} {}ms {}={}{}{}",
         method,
         path,
         query != null ? "?" + query : "",
@@ -155,29 +175,56 @@ public class AccessLogFilter implements WebFilter, Ordered {
         String.format(Locale.ROOT, "%.3f", duration / 1_000_000.0),
         REQUEST_ID_HEADER,
         requestId,
-        content != null ? " body=" + content : "");
+        requestContent != null ? " request.body=" + requestContent : "",
+        responseContent != null ? " response.body=" + responseContent : "");
+  }
+
+  /** Copies the JSON request body as the application reads it. */
+  static final class RequestCapture extends ServerHttpRequestDecorator {
+
+    final BodyCopy body = new BodyCopy();
+
+    RequestCapture(ServerHttpRequest delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public Flux<DataBuffer> getBody() {
+      return body.tap(getHeaders().getContentType(), super.getBody());
+    }
   }
 
   /**
-   * Copies the first {@value #MAX_BODY_BYTES} bytes of a JSON response body as it is written,
-   * without consuming it. Bodies written with {@code writeAndFlushWith} (streams) are not copied.
+   * Copies the JSON response body as it is written; streams ({@code writeAndFlushWith}) are not.
    */
-  static final class BodyCapture extends ServerHttpResponseDecorator {
+  static final class ResponseCapture extends ServerHttpResponseDecorator {
+
+    final BodyCopy body = new BodyCopy();
+
+    ResponseCapture(ServerHttpResponse delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public Mono<Void> writeWith(Publisher<? extends DataBuffer> content) {
+      return super.writeWith(body.tap(getHeaders().getContentType(), content));
+    }
+  }
+
+  /**
+   * Copies the first {@value #MAX_BODY_BYTES} bytes of a JSON body as it passes, without consuming
+   * it, and counts every byte.
+   */
+  static final class BodyCopy {
 
     private final ByteArrayOutputStream copy = new ByteArrayOutputStream();
     private long bytes;
     private boolean json;
 
-    BodyCapture(ServerHttpResponse delegate) {
-      super(delegate);
-    }
-
-    @Override
-    public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
-      MediaType type = getHeaders().getContentType();
+    <T extends DataBuffer> Flux<T> tap(@Nullable MediaType type, Publisher<T> content) {
       json =
           type != null && (type.getSubtype().equals("json") || type.getSubtype().endsWith("+json"));
-      return json ? super.writeWith(Flux.from(body).doOnNext(this::copy)) : super.writeWith(body);
+      return json ? Flux.from(content).doOnNext(this::copy) : Flux.from(content);
     }
 
     private synchronized void copy(DataBuffer buffer) {
