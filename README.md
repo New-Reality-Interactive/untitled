@@ -149,11 +149,13 @@ ones (401, 400) and health probes and Prometheus scrapes. A line holds:
 - `http.request.header` and `http.response.header`: every header as
   `{"name": ["value", ...]}`, with names lowercased. The values of `Authorization`,
   `Proxy-Authorization`, `Cookie` and `Set-Cookie` are replaced by `[REDACTED]`.
-- `http.request.body` / `http.response.body`, for JSON bodies only (`application/json` and `+json`
-  types such as problem details). A body that parses is logged as raw, compacted JSON (with ECS, a
-  nested object); one cut at 8 KiB or invalid is logged as a string. Form data, Prometheus text,
-  HTML and streams are not logged, and a request body appears only when the application reads it,
-  so a request rejected with 401 logs none. These fields differ from ECS, which puts the body in
+- `http.request.body` / `http.response.body`: the body as raw, compacted JSON (with ECS, a nested
+  object), only for JSON content types (`application/json` and `+json` types such as problem
+  details) and only when it is a JSON object or an array of objects of at most 8 KiB. Anything else
+  (a larger body, invalid JSON, a single value, an array of values, form data, Prometheus text,
+  HTML, streams) is left out, because a log store maps a field as either an object or a value and
+  would reject the whole line. A request body appears only when the application reads it, so a
+  request rejected with 401 logs none. These fields differ from ECS, which puts the body in
   `body.content` next to `body.bytes`.
 
 With ECS the message is only a summary (`POST /actuator/loggers/x 204`). The plain-text console of
@@ -188,11 +190,22 @@ change any other logger's level too, for example `org.springframework.web` to `D
 
 #### Elasticsearch mapping
 
-Callers choose the header names, so indexed as they are, every new name becomes a new field and can
-reach Elasticsearch's per-index field limit. [`deploy/elasticsearch/untitled-http-access.component-template.json`](deploy/elasticsearch/untitled-http-access.component-template.json)
-maps `http.request.header` and `http.response.header` as `flattened` (one field each, still
-searchable by header, e.g. `http.request.header.user-agent: curl*`). Install it and add
-`untitled-http-access` to the `composed_of` list of the index template your logs use:
+[`deploy/elasticsearch/untitled-http-access.component-template.json`](deploy/elasticsearch/untitled-http-access.component-template.json)
+maps the fields that vary with each request:
+
+- `http.request.header` and `http.response.header` are `flattened` (one field each; search by
+  header, e.g. `http.request.header.user-agent: curl*`), since callers choose the header names.
+- Body keys get typed fields so range queries work (e.g. `http.response.body.price >= 10`):
+  numbers are `double`, date strings `date`, other strings and booleans `keyword`. Nested objects
+  are stored as dotted keys (`subobjects: false`), so `error` can be a string in one body and an
+  object in another. A value whose type differs from the key's mapping (`"UP"` where `404` came
+  first) is skipped, not indexed, and stays in `_source`; the first type seen for a key in an index
+  wins.
+- Past the index's field limit, new keys are skipped instead of rejecting the line
+  (`index.mapping.total_fields.ignore_dynamic_beyond_limit`).
+
+Install it and add `untitled-http-access` to the `composed_of` list of the index template your
+logs use:
 
 ```sh
 curl -X PUT -H 'Content-Type: application/json' "$ES_URL/_component_template/untitled-http-access" \

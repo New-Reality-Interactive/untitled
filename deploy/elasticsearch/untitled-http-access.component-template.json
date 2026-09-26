@@ -1,9 +1,44 @@
 {
   "_meta": {
-    "description": "Mappings for the untitled service's http.access log fields. http.request.header and http.response.header are objects from header name to values; clients choose the names, so they are mapped as flattened (one field each) instead of one dynamic field per header name."
+    "description": "Mappings for the untitled service's http.access log fields. Headers are flattened: callers choose the names. Bodies get typed fields so range queries work, set up so that type conflicts between endpoints skip a value instead of rejecting the log line."
   },
   "template": {
+    "settings": {
+      "index.mapping.total_fields.ignore_dynamic_beyond_limit": true
+    },
     "mappings": {
+      "dynamic_templates": [
+        {
+          "untitled_http_body_numbers": {
+            "path_match": ["http.request.body.*", "http.response.body.*"],
+            "match_mapping_type": ["long", "double"],
+            "mapping": {
+              "type": "double",
+              "ignore_malformed": true
+            }
+          }
+        },
+        {
+          "untitled_http_body_dates": {
+            "path_match": ["http.request.body.*", "http.response.body.*"],
+            "match_mapping_type": "date",
+            "mapping": {
+              "type": "date",
+              "ignore_malformed": true
+            }
+          }
+        },
+        {
+          "untitled_http_body_strings_and_booleans": {
+            "path_match": ["http.request.body.*", "http.response.body.*"],
+            "match_mapping_type": ["string", "boolean"],
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        }
+      ],
       "properties": {
         "http": {
           "properties": {
@@ -12,6 +47,10 @@
                 "header": {
                   "type": "flattened",
                   "ignore_above": 1024
+                },
+                "body": {
+                  "type": "object",
+                  "subobjects": false
                 }
               }
             },
@@ -20,6 +59,10 @@
                 "header": {
                   "type": "flattened",
                   "ignore_above": 1024
+                },
+                "body": {
+                  "type": "object",
+                  "subobjects": false
                 }
               }
             }

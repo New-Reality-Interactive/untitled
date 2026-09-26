@@ -246,10 +246,24 @@ class AccessLogFilterTest {
   }
 
   @Test
-  void logsInvalidOrCutJsonBodiesAsStrings() {
-    respond(MockServerHttpRequest.get("/broken").build(), MediaType.APPLICATION_JSON, "{\"a\":");
+  void logsArraysOfObjects() {
+    respond(
+        MockServerHttpRequest.get("/list").build(),
+        MediaType.APPLICATION_JSON,
+        "[{\"a\":1},{\"a\":2}]",
+        "");
 
-    assertThat(onlyLine()).containsEntry("http.response.body", "{\"a\":");
+    assertThat(onlyLine()).containsEntry("http.response.body", "[{\"a\":1},{\"a\":2}]");
+  }
+
+  @Test
+  void leavesOutBodiesThatAreNotAnObjectOrAnArrayOfObjects() {
+    for (String body : List.of("{\"a\":", "\"ok\"", "42", "[1,2,3]", "[{\"a\":1},2]")) {
+      appender.list.clear();
+      respond(MockServerHttpRequest.get("/").build(), MediaType.APPLICATION_JSON, body);
+      assertThat(onlyLine()).as(body).doesNotContainKey("http.response.body");
+      assertThat(appender.list.getFirst().getFormattedMessage()).as(body).doesNotContain("body=");
+    }
   }
 
   @Test
@@ -274,13 +288,11 @@ class AccessLogFilterTest {
   }
 
   @Test
-  void logsLargeJsonBodiesCutAsStrings() {
-    String large = "[\"" + "x".repeat(AccessLogFilter.MAX_BODY_BYTES) + "\"]";
+  void leavesOutBodiesCutAtTheLimit() {
+    String large = "{\"x\":\"" + "x".repeat(AccessLogFilter.MAX_BODY_BYTES) + "\"}";
     respond(MockServerHttpRequest.get("/big").build(), MediaType.APPLICATION_JSON, large);
 
-    Map<String, Object> fields = onlyLine();
-    assertThat((String) fields.get("http.response.body"))
-        .isEqualTo(large.substring(0, AccessLogFilter.MAX_BODY_BYTES));
+    assertThat(onlyLine()).doesNotContainKey("http.response.body");
   }
 
   @Test

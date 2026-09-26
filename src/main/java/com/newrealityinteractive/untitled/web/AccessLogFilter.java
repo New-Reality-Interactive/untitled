@@ -40,6 +40,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -53,10 +54,10 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>JSON request and response bodies are logged under {@code http.request.body} and {@code
  * http.response.body} (not ECS's {@code body.content}) as raw, compacted JSON, so structured
- * formats nest them as objects; a body that is not valid JSON, or was cut at {@value
- * #MAX_BODY_BYTES} bytes, is logged as a string instead. Other bodies (form data, Prometheus text,
- * HTML, streams) are not. A request body is only seen when the application reads it, so requests
- * rejected before that (a 401, for example) log none.
+ * formats nest them as objects. Only a JSON object or an array of objects is logged: a body cut at
+ * {@value #MAX_BODY_BYTES} bytes, invalid JSON, a scalar or an array of scalars is left out, and so
+ * are other bodies (form data, Prometheus text, HTML, streams) are not. A request body is only seen
+ * when the application reads it, so requests rejected before that (a 401, for example) log none.
  *
  * <p>Every request and response header is logged under {@code http.request.header} and {@code
  * http.response.header}, as an object from lowercased header name to its values, except that the
@@ -178,11 +179,11 @@ public class AccessLogFilter implements WebFilter, Ordered {
         event
             .addKeyValue("http.request.header", requestHeaders)
             .addKeyValue("http.response.header", responseHeaders);
-    Object requestContent = requestBody.body.content();
+    RawJson requestContent = requestBody.body.content();
     if (requestContent != null) {
       event = event.addKeyValue("http.request.body", requestContent);
     }
-    Object responseContent = responseBody.body.content();
+    RawJson responseContent = responseBody.body.content();
     if (responseContent != null) {
       event = event.addKeyValue("http.response.body", responseContent);
     }
@@ -297,20 +298,37 @@ public class AccessLogFilter implements WebFilter, Ordered {
       }
     }
 
-    /** The body as {@link RawJson} when it parses, as a string when it does not (cut, invalid). */
-    synchronized @Nullable Object content() {
-      if (!json || bytes == 0) {
+    /**
+     * The body when it is a JSON object or an array of objects; otherwise (cut, invalid, a scalar
+     * or an array of scalars) {@code null}, since log stores map a field as either an object or a
+     * value, and a line whose body did not fit that would be rejected whole.
+     */
+    synchronized @Nullable RawJson content() {
+      if (!json || bytes == 0 || bytes > MAX_BODY_BYTES) {
         return null;
       }
-      String text = copy.toString(StandardCharsets.UTF_8);
-      if (bytes > MAX_BODY_BYTES) {
-        return text;
-      }
+      JsonNode node;
       try {
-        return new RawJson(JSON.readTree(text).toString());
+        node = JSON.readTree(copy.toString(StandardCharsets.UTF_8));
       } catch (JacksonException notJson) {
-        return text;
+        return null;
       }
+      return isObjectOrArrayOfObjects(node) ? new RawJson(node.toString()) : null;
+    }
+
+    private static boolean isObjectOrArrayOfObjects(JsonNode node) {
+      if (node.isObject()) {
+        return true;
+      }
+      if (!node.isArray()) {
+        return false;
+      }
+      for (JsonNode element : node) {
+        if (!element.isObject()) {
+          return false;
+        }
+      }
+      return true;
     }
   }
 }
