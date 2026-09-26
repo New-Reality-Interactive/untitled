@@ -34,7 +34,7 @@ class AccessLogFilterTest {
 
   private final Logger logger = (Logger) LoggerFactory.getLogger("http.access");
   private final ListAppender<ILoggingEvent> appender = new ListAppender<>();
-  private final AccessLogFilter filter = new AccessLogFilter();
+  private final AccessLogFilter filter = new AccessLogFilter("");
   private Level originalLevel;
 
   @BeforeEach
@@ -140,6 +140,23 @@ class AccessLogFilterTest {
         .containsEntry("http.response.body.bytes", 25L);
     assertThat(appender.list.getFirst().getFormattedMessage())
         .endsWith(" X-Request-Id=ada-test-001 body={\"message\":\"Hello, Ada!\"}");
+  }
+
+  @Test
+  void keepsTheMessageShortWhenTheConsoleIsStructured() {
+    WebTestClient.bindToWebHandler(respondWith(HttpStatus.OK))
+        .webFilter(new AccessLogFilter("ecs"))
+        .build()
+        .get()
+        .uri("/api/v1/greetings?name=Ada")
+        .exchange();
+
+    assertThat(onlyLine())
+        .containsEntry("url.query", "name=Ada")
+        .containsKey("http.request.id")
+        .containsKey("event.duration");
+    assertThat(appender.list.getFirst().getFormattedMessage())
+        .isEqualTo("GET /api/v1/greetings 200");
   }
 
   @Test

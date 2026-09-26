@@ -145,9 +145,10 @@ ones (401, 400) and health probes and Prometheus scrapes. A line holds `http.req
 (nanoseconds) and `http.request.id` (the `X-Request-Id` response header). JSON response bodies
 (`application/json` and `+json` types such as problem details) add `http.response.body.content`,
 cut at 8 KiB, and `http.response.body.bytes`, the full size; other bodies (Prometheus text, HTML,
-streams) are not logged. The message repeats all of it
-(`GET /api/v1/greetings?name=Ada 200 80.379ms X-Request-Id=ada-test-001 body={"message":"Hello, Ada!"}`),
-so the plain-text console of the `local` profile, which drops the separate fields, shows it too.
+streams) are not logged. With ECS the message is only a summary (`GET /api/v1/greetings 200`). The
+plain-text console of the `local` profile drops the separate fields, so there the message repeats
+all of it
+(`GET /api/v1/greetings?name=Ada 200 80.379ms X-Request-Id=ada-test-001 body={"message":"Hello, Ada!"}`).
 Request headers, cookies, request bodies and the user are never logged, so neither are
 credentials; query strings and JSON response bodies are, so keep secrets out of them.
 

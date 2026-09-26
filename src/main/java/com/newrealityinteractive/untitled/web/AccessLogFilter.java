@@ -11,6 +11,7 @@ import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.spi.LoggingEventBuilder;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -34,9 +35,9 @@ import reactor.core.publisher.SignalType;
  * Writes one access log line per exchange on both ports, as SLF4J key-value pairs with ECS names,
  * through the {@value #LOGGER_NAME} logger. The logger is at {@code WARN} by default; setting it to
  * {@code INFO} (for example through the actuator {@code loggers} endpoint) turns access logging on
- * without a restart. The message repeats every field ({@code GET /path?query 200 12.345ms
- * X-Request-Id=<id> body=<json>}) so plain-text console output, which drops key-value pairs, shows
- * them too.
+ * without a restart. With a plain-text console, which drops key-value pairs, the message repeats
+ * every field ({@code GET /path?query 200 12.345ms X-Request-Id=<id> body=<json>}); with a
+ * structured console format, which writes them as fields, it is only {@code GET /path 200}.
  *
  * <p>JSON response bodies are logged, cut at {@value #MAX_BODY_BYTES} bytes; other response bodies
  * (Prometheus text, HTML, streams) are not. Request headers, cookies, request bodies and the
@@ -54,6 +55,12 @@ public class AccessLogFilter implements WebFilter, Ordered {
 
   private static final Pattern VALID_REQUEST_ID = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
   private static final Logger log = LoggerFactory.getLogger(LOGGER_NAME);
+
+  private final boolean plainText;
+
+  AccessLogFilter(@Value("${logging.structured.format.console:}") String consoleFormat) {
+    this.plainText = consoleFormat.isBlank();
+  }
 
   @Override
   public int getOrder() {
@@ -104,7 +111,7 @@ public class AccessLogFilter implements WebFilter, Ordered {
     return annotation != null ? annotation.code() : HttpStatus.INTERNAL_SERVER_ERROR;
   }
 
-  private static void write(
+  private void write(
       ServerWebExchange exchange,
       String requestId,
       long start,
@@ -134,12 +141,17 @@ public class AccessLogFilter implements WebFilter, Ordered {
               .addKeyValue("http.response.body.content", content)
               .addKeyValue("http.response.body.bytes", body.bytes());
     }
+    String statusText = status != null ? String.valueOf(status.value()) : "-";
+    if (!plainText) {
+      event.log("{} {} {}", method, path, statusText);
+      return;
+    }
     event.log(
         "{} {}{} {} {}ms {}={}{}",
         method,
         path,
         query != null ? "?" + query : "",
-        status != null ? status.value() : "-",
+        statusText,
         String.format(Locale.ROOT, "%.3f", duration / 1_000_000.0),
         REQUEST_ID_HEADER,
         requestId,
