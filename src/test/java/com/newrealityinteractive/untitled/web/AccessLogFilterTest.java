@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.KeyValuePair;
+import org.springframework.boot.json.WritableJson;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -71,7 +72,13 @@ class AccessLogFilterTest {
 
   private static Map<String, Object> fields(ILoggingEvent event) {
     List<KeyValuePair> pairs = event.getKeyValuePairs();
-    return pairs.stream().collect(Collectors.toMap(pair -> pair.key, pair -> pair.value));
+    // Raw JSON bodies compare by their text.
+    return pairs.stream()
+        .collect(
+            Collectors.toMap(
+                pair -> pair.key,
+                pair ->
+                    pair.value instanceof AccessLogFilter.RawJson raw ? raw.json() : pair.value));
   }
 
   @Test
@@ -214,6 +221,32 @@ class AccessLogFilterTest {
         .exchange();
 
     assertThat(onlyLine()).doesNotContainKey("http.request.body.content");
+  }
+
+  @Test
+  void logsValidJsonBodiesAsCompactRawJson() {
+    respond(
+        MockServerHttpRequest.get("/pretty").build(),
+        MediaType.APPLICATION_JSON,
+        "{\n  \"price\" : 1.10,\n  \"tags\" : [ \"a\" ]\n}");
+
+    Object content =
+        appender.list.getFirst().getKeyValuePairs().stream()
+            .filter(pair -> pair.key.equals("http.response.body.content"))
+            .findFirst()
+            .orElseThrow()
+            .value;
+    assertThat(appender.list).hasSize(1);
+    assertThat(content).isInstanceOf(AccessLogFilter.RawJson.class);
+    assertThat(((WritableJson) content).toJsonString())
+        .isEqualTo("{\"price\":1.10,\"tags\":[\"a\"]}");
+  }
+
+  @Test
+  void logsInvalidOrCutJsonBodiesAsStrings() {
+    respond(MockServerHttpRequest.get("/broken").build(), MediaType.APPLICATION_JSON, "{\"a\":");
+
+    assertThat(onlyLine()).containsEntry("http.response.body.content", "{\"a\":");
   }
 
   @Test

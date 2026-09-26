@@ -1,6 +1,7 @@
 package com.newrealityinteractive.untitled.web;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -12,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.spi.LoggingEventBuilder;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.json.WritableJson;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -31,6 +33,9 @@ import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Writes one access log line per exchange on both ports, as SLF4J key-value pairs with ECS names,
@@ -41,10 +46,11 @@ import reactor.core.publisher.SignalType;
  * response.body=<json>}); with a structured console format, which writes them as fields, it is only
  * {@code POST /path 200}.
  *
- * <p>JSON request and response bodies are logged, cut at {@value #MAX_BODY_BYTES} bytes; other
- * bodies (form data, Prometheus text, HTML, streams) are not. A request body is only seen when the
- * application reads it, so requests rejected before that (a 401, for example) log none. Headers,
- * cookies and the principal are never logged.
+ * <p>JSON request and response bodies are logged as raw, compacted JSON, so structured formats nest
+ * them as objects; a body that is not valid JSON, or was cut at {@value #MAX_BODY_BYTES} bytes, is
+ * logged as a string instead. Other bodies (form data, Prometheus text, HTML, streams) are not. A
+ * request body is only seen when the application reads it, so requests rejected before that (a 401,
+ * for example) log none. Headers, cookies and the principal are never logged.
  *
  * <p>Every response carries an {@value #REQUEST_ID_HEADER} header: the caller's own value when it
  * is well formed, otherwise a generated UUID.
@@ -58,6 +64,9 @@ public class AccessLogFilter implements WebFilter, Ordered {
 
   private static final Pattern VALID_REQUEST_ID = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
   private static final Logger log = LoggerFactory.getLogger(LOGGER_NAME);
+  // Big decimals so re-writing a body keeps its numbers exactly as sent.
+  private static final JsonMapper JSON =
+      JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
   private final boolean plainText;
 
@@ -147,14 +156,14 @@ public class AccessLogFilter implements WebFilter, Ordered {
     if (status != null) {
       event = event.addKeyValue("http.response.status_code", status.value());
     }
-    String requestContent = requestBody.body.content();
+    Object requestContent = requestBody.body.content();
     if (requestContent != null) {
       event =
           event
               .addKeyValue("http.request.body.content", requestContent)
               .addKeyValue("http.request.body.bytes", requestBody.body.bytes());
     }
-    String responseContent = responseBody.body.content();
+    Object responseContent = responseBody.body.content();
     if (responseContent != null) {
       event =
           event
@@ -212,6 +221,23 @@ public class AccessLogFilter implements WebFilter, Ordered {
   }
 
   /**
+   * Valid, compact JSON that structured log formats write as is instead of as an escaped string;
+   * {@link #toString()} gives the same text for plain-text output.
+   */
+  record RawJson(String json) implements WritableJson {
+
+    @Override
+    public void to(Appendable out) throws IOException {
+      out.append(json);
+    }
+
+    @Override
+    public String toString() {
+      return json;
+    }
+  }
+
+  /**
    * Copies the first {@value #MAX_BODY_BYTES} bytes of a JSON body as it passes, without consuming
    * it, and counts every byte.
    */
@@ -239,8 +265,20 @@ public class AccessLogFilter implements WebFilter, Ordered {
       }
     }
 
-    synchronized @Nullable String content() {
-      return json && bytes > 0 ? copy.toString(StandardCharsets.UTF_8) : null;
+    /** The body as {@link RawJson} when it parses, as a string when it does not (cut, invalid). */
+    synchronized @Nullable Object content() {
+      if (!json || bytes == 0) {
+        return null;
+      }
+      String text = copy.toString(StandardCharsets.UTF_8);
+      if (bytes > MAX_BODY_BYTES) {
+        return text;
+      }
+      try {
+        return new RawJson(JSON.readTree(text).toString());
+      } catch (JacksonException notJson) {
+        return text;
+      }
     }
 
     synchronized long bytes() {

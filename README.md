@@ -145,7 +145,8 @@ ones (401, 400) and health probes and Prometheus scrapes. A line holds `http.req
 (nanoseconds) and `http.request.id` (the `X-Request-Id` response header). JSON bodies
 (`application/json` and `+json` types such as problem details) add `http.request.body.content` /
 `http.response.body.content`, cut at 8 KiB, and `http.request.body.bytes` /
-`http.response.body.bytes`, the full size. Other bodies (form data, Prometheus text, HTML, streams)
+`http.response.body.bytes`, the full size. A body that parses as JSON is logged as raw, compacted
+JSON, so with ECS `content` is a nested object; a cut or invalid one is logged as a string. Other bodies (form data, Prometheus text, HTML, streams)
 are not logged, and a request body appears only when the application reads it, so a request
 rejected with 401 logs none. With ECS the message is only a summary (`POST /actuator/loggers/x 204`).
 The plain-text console of the `local` profile drops the separate fields, so there the message
