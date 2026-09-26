@@ -1,0 +1,42 @@
+spring:
+  application:
+    name: untitled
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+logging:
+  structured:
+    format:
+      console: ecs
+
+server:
+  port: 8080
+  shutdown: graceful
+
+# API credentials have no default: set app.security.username / app.security.password
+# (or APP_SECURITY_USERNAME / APP_SECURITY_PASSWORD). Startup fails when they are missing.
+
+management:
+  server:
+    port: 8081
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        readiness:
+          include: readinessState, greeting
+          show-components: always
+
+springdoc:
+  api-docs:
+    version: openapi_3_1
+  writer-with-default-pretty-printer: true
