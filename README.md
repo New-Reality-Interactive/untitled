@@ -140,23 +140,32 @@ LOGGING_STRUCTURED_FORMAT_CONSOLE= java -jar target/untitled-*.jar
 ### Access log
 
 The service can log one line per HTTP request on both ports (8080 and 8081), including rejected
-ones (401, 400) and health probes and Prometheus scrapes. A line holds `http.request.method`,
-`url.path`, `url.query` (only when there is one), `http.response.status_code`, `event.duration`
-(nanoseconds), `http.request.id` (the `X-Request-Id` response header) and `http.request.header`,
-every request header as `{"Name": ["value", ...]}`, with the values of `Authorization`,
-`Proxy-Authorization` and `Cookie` replaced by `[REDACTED]`. JSON bodies
-(`application/json` and `+json` types such as problem details) add `http.request.body.content` /
-`http.response.body.content`, cut at 8 KiB, and `http.request.body.bytes` /
-`http.response.body.bytes`, the full size. A body that parses as JSON is logged as raw, compacted
-JSON, so with ECS `content` is a nested object; a cut or invalid one is logged as a string. Other bodies (form data, Prometheus text, HTML, streams)
-are not logged, and a request body appears only when the application reads it, so a request
-rejected with 401 logs none. With ECS the message is only a summary (`POST /actuator/loggers/x 204`).
-The plain-text console of the `local` profile drops the separate fields, so there the message
-repeats all of it
-(`GET /api/v1/greetings?name=Ada 200 80.379ms X-Request-Id=ada-test-001 request.header={"Host":["localhost:8080"],"Authorization":["[REDACTED]"]} response.body={"message":"Hello, Ada!"}`,
-with `request.body=` before `response.body=` when the request has one). Credentials are redacted
-and the user and response headers are not logged; query strings, other headers and JSON bodies
-are, so keep secrets out of them.
+ones (401, 400) and health probes and Prometheus scrapes. A line holds:
+
+- `http.request.method`, `url.path`, `url.query` (only when there is one),
+  `http.response.status_code` and `event.duration` (nanoseconds).
+- `http.request.id`: the `X-Request-Id` response header, which is the caller's value when it sent a
+  well-formed one and a generated UUID otherwise.
+- `http.request.header` and `http.response.header`: every header as
+  `{"name": ["value", ...]}`, with names lowercased. The values of `Authorization`,
+  `Proxy-Authorization`, `Cookie` and `Set-Cookie` are replaced by `[REDACTED]`.
+- `http.request.body.content` / `http.response.body.content` and `.bytes`, for JSON bodies only
+  (`application/json` and `+json` types such as problem details). A body that parses is logged as
+  raw, compacted JSON (with ECS, a nested object); one cut at 8 KiB or invalid is logged as a
+  string. `.bytes` is the full size. Form data, Prometheus text, HTML and streams are not logged,
+  and a request body appears only when the application reads it, so a request rejected with 401
+  logs none.
+
+With ECS the message is only a summary (`POST /actuator/loggers/x 204`). The plain-text console of
+the `local` profile drops the separate fields, so there the message repeats all of them:
+
+```text
+GET /api/v1/greetings?name=Ada 200 80.379ms X-Request-Id=ada-test-001 request.header={"host":["localhost:8080"],"authorization":["[REDACTED]"]} response.header={"x-request-id":["ada-test-001"],"content-type":["application/json"]} response.body={"message":"Hello, Ada!"}
+```
+
+(`request.body=` follows `request.header=` when the request has one.) Credentials are redacted and
+the user is not logged; query strings, other headers and JSON bodies are, so keep secrets out of
+them.
 
 It is written by the `http.access` logger at `INFO`, and that logger is at `WARN` by default, so the
 access log is off. Turn it on and off while the service runs, without a restart, through the
@@ -176,6 +185,19 @@ each one's management port directly (not through a load balancer), and it lasts 
 restarts. To start with it on, pass
 `--logging.level.http.access=INFO` (or set `LOGGING_LEVEL_HTTP_ACCESS=INFO`). The same endpoint can
 change any other logger's level too, for example `org.springframework.web` to `DEBUG`.
+
+#### Elasticsearch mapping
+
+Callers choose the header names, so indexed as they are, every new name becomes a new field and can
+reach Elasticsearch's per-index field limit. [`deploy/elasticsearch/untitled-http-access.component-template.json`](deploy/elasticsearch/untitled-http-access.component-template.json)
+maps `http.request.header` and `http.response.header` as `flattened` (one field each, still
+searchable by header, e.g. `http.request.header.user-agent: curl*`). Install it and add
+`untitled-http-access` to the `composed_of` list of the index template your logs use:
+
+```sh
+curl -X PUT -H 'Content-Type: application/json' "$ES_URL/_component_template/untitled-http-access" \
+  --data-binary @deploy/elasticsearch/untitled-http-access.component-template.json
+```
 
 ## Formatting
 

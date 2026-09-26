@@ -21,6 +21,7 @@ import org.springframework.boot.json.WritableJson;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -47,8 +48,8 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code INFO} (for example through the actuator {@code loggers} endpoint) turns access logging on
  * without a restart. With a plain-text console, which drops key-value pairs, the message repeats
  * every field ({@code POST /path?query 200 12.345ms X-Request-Id=<id> request.header=<json>
- * request.body=<json> response.body=<json>}); with a structured console format, which writes them
- * as fields, it is only {@code POST /path 200}.
+ * request.body=<json> response.header=<json> response.body=<json>}); with a structured console
+ * format, which writes them as fields, it is only {@code POST /path 200}.
  *
  * <p>JSON request and response bodies are logged as raw, compacted JSON, so structured formats nest
  * them as objects; a body that is not valid JSON, or was cut at {@value #MAX_BODY_BYTES} bytes, is
@@ -56,10 +57,11 @@ import tools.jackson.databind.json.JsonMapper;
  * request body is only seen when the application reads it, so requests rejected before that (a 401,
  * for example) log none.
  *
- * <p>Every request header is logged under {@code http.request.header}, as an object from header
- * name to its values, except that the values of {@code Authorization}, {@code Proxy-Authorization}
- * and {@code Cookie}, which carry credentials, are replaced with {@value #REDACTED}. Response
- * headers and the principal are not logged.
+ * <p>Every request and response header is logged under {@code http.request.header} and {@code
+ * http.response.header}, as an object from lowercased header name to its values, except that the
+ * values of {@code Authorization}, {@code Proxy-Authorization}, {@code Cookie} and {@code
+ * Set-Cookie}, which carry credentials, are replaced with {@value #REDACTED}. The principal is not
+ * logged.
  *
  * <p>Every response carries an {@value #REQUEST_ID_HEADER} header: the caller's own value when it
  * is well formed, otherwise a generated UUID.
@@ -73,7 +75,7 @@ public class AccessLogFilter implements WebFilter, Ordered {
   static final String REDACTED = "[REDACTED]";
 
   private static final Set<String> REDACTED_HEADERS =
-      Set.of("authorization", "proxy-authorization", "cookie");
+      Set.of("authorization", "proxy-authorization", "cookie", "set-cookie");
 
   private static final Pattern VALID_REQUEST_ID = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
   private static final Logger log = LoggerFactory.getLogger(LOGGER_NAME);
@@ -169,8 +171,12 @@ public class AccessLogFilter implements WebFilter, Ordered {
     if (status != null) {
       event = event.addKeyValue("http.response.status_code", status.value());
     }
-    RawJson headers = headers(request);
-    event = event.addKeyValue("http.request.header", headers);
+    RawJson requestHeaders = headers(request.getHeaders());
+    RawJson responseHeaders = headers(exchange.getResponse().getHeaders());
+    event =
+        event
+            .addKeyValue("http.request.header", requestHeaders)
+            .addKeyValue("http.response.header", responseHeaders);
     Object requestContent = requestBody.body.content();
     if (requestContent != null) {
       event =
@@ -191,7 +197,7 @@ public class AccessLogFilter implements WebFilter, Ordered {
       return;
     }
     event.log(
-        "{} {}{} {} {}ms {}={} request.header={}{}{}",
+        "{} {}{} {} {}ms {}={} request.header={}{} response.header={}{}",
         method,
         path,
         query != null ? "?" + query : "",
@@ -199,24 +205,24 @@ public class AccessLogFilter implements WebFilter, Ordered {
         String.format(Locale.ROOT, "%.3f", duration / 1_000_000.0),
         REQUEST_ID_HEADER,
         requestId,
-        headers,
+        requestHeaders,
         requestContent != null ? " request.body=" + requestContent : "",
+        responseHeaders,
         responseContent != null ? " response.body=" + responseContent : "");
   }
 
-  /** Every request header with all its values, credentials redacted, as a JSON object. */
-  private static RawJson headers(ServerHttpRequest request) {
-    Map<String, List<String>> headers = new LinkedHashMap<>();
-    request
-        .getHeaders()
-        .forEach(
-            (name, values) ->
-                headers.put(
-                    name,
-                    REDACTED_HEADERS.contains(name.toLowerCase(Locale.ROOT))
-                        ? List.of(REDACTED)
-                        : values));
-    return new RawJson(JSON.writeValueAsString(headers));
+  /**
+   * Every header with all its values, as a JSON object. Names are lowercased (they are
+   * case-insensitive, so this gives one field per header) and credentials are redacted.
+   */
+  private static RawJson headers(HttpHeaders headers) {
+    Map<String, List<String>> json = new LinkedHashMap<>();
+    headers.forEach(
+        (name, values) -> {
+          String key = name.toLowerCase(Locale.ROOT);
+          json.put(key, REDACTED_HEADERS.contains(key) ? List.of(REDACTED) : List.copyOf(values));
+        });
+    return new RawJson(JSON.writeValueAsString(json));
   }
 
   /** Copies the JSON request body as the application reads it. */

@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "description": "Mappings for the untitled service's http.access log fields. http.request.header and http.response.header are objects from header name to values; clients choose the names, so they are mapped as flattened (one field each) instead of one dynamic field per header name."
+  },
+  "template": {
+    "mappings": {
+      "properties": {
+        "http": {
+          "properties": {
+            "request": {
+              "properties": {
+                "header": {
+                  "type": "flattened",
+                  "ignore_above": 1024
+                }
+              }
+            },
+            "response": {
+              "properties": {
+                "header": {
+                  "type": "flattened",
+                  "ignore_above": 1024
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
