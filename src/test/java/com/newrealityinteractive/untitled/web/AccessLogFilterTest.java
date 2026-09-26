@@ -6,6 +6,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -16,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.event.KeyValuePair;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.WebFilterChain;
 import org.springframework.web.server.WebHandler;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -93,7 +96,84 @@ class AccessLogFilterTest {
         .containsEntry("http.request.id", requestId);
     assertThat((Long) fields.get("event.duration")).isPositive();
     assertThat(appender.list.getFirst().getFormattedMessage())
-        .matches("GET /api/v1/greetings\\?name=Ada 200 \\d+\\.\\d{3}ms id=" + requestId);
+        .matches("GET /api/v1/greetings\\?name=Ada 200 \\d+\\.\\d{3}ms X-Request-Id=" + requestId);
+  }
+
+  /** Runs the filter directly: the mock response consumes the whole body before completing. */
+  private MockServerWebExchange respond(
+      MockServerHttpRequest request, MediaType type, String... chunks) {
+    MockServerWebExchange exchange = MockServerWebExchange.from(request);
+    WebFilterChain writesChunks =
+        filtered -> {
+          filtered.getResponse().getHeaders().setContentType(type);
+          return filtered
+              .getResponse()
+              .writeWith(
+                  Flux.fromArray(chunks)
+                      .map(
+                          chunk ->
+                              filtered
+                                  .getResponse()
+                                  .bufferFactory()
+                                  .wrap(chunk.getBytes(StandardCharsets.UTF_8))));
+        };
+    StepVerifier.create(filter.filter(exchange, writesChunks)).verifyComplete();
+    return exchange;
+  }
+
+  @Test
+  void logsJsonResponseBodiesAndStillSendsThem() {
+    MockServerWebExchange exchange =
+        respond(
+            MockServerHttpRequest.get("/api/v1/greetings?name=Ada")
+                .header(AccessLogFilter.REQUEST_ID_HEADER, "ada-test-001")
+                .build(),
+            MediaType.APPLICATION_JSON,
+            "{\"message\":",
+            "\"Hello, Ada!\"}");
+
+    StepVerifier.create(exchange.getResponse().getBodyAsString())
+        .expectNext("{\"message\":\"Hello, Ada!\"}")
+        .verifyComplete();
+    assertThat(onlyLine())
+        .containsEntry("http.response.body.content", "{\"message\":\"Hello, Ada!\"}")
+        .containsEntry("http.response.body.bytes", 25L);
+    assertThat(appender.list.getFirst().getFormattedMessage())
+        .endsWith(" X-Request-Id=ada-test-001 body={\"message\":\"Hello, Ada!\"}");
+  }
+
+  @Test
+  void logsJsonSuffixMediaTypesSuchAsProblemDetails() {
+    respond(
+        MockServerHttpRequest.get("/nope").build(),
+        MediaType.APPLICATION_PROBLEM_JSON,
+        "{\"status\":404}");
+
+    assertThat(onlyLine()).containsEntry("http.response.body.content", "{\"status\":404}");
+  }
+
+  @Test
+  void doesNotLogNonJsonResponseBodies() {
+    respond(
+        MockServerHttpRequest.get("/actuator/prometheus").build(),
+        MediaType.TEXT_PLAIN,
+        "jvm_threads_live 42");
+
+    assertThat(onlyLine())
+        .doesNotContainKey("http.response.body.content")
+        .doesNotContainKey("http.response.body.bytes");
+    assertThat(appender.list.getFirst().getFormattedMessage()).doesNotContain("body=");
+  }
+
+  @Test
+  void cutsLargeJsonBodiesButCountsEveryByte() {
+    String large = "[\"" + "x".repeat(AccessLogFilter.MAX_BODY_BYTES) + "\"]";
+    respond(MockServerHttpRequest.get("/big").build(), MediaType.APPLICATION_JSON, large);
+
+    Map<String, Object> fields = onlyLine();
+    assertThat((String) fields.get("http.response.body.content"))
+        .isEqualTo(large.substring(0, AccessLogFilter.MAX_BODY_BYTES));
+    assertThat(fields).containsEntry("http.response.body.bytes", (long) large.length());
   }
 
   @Test

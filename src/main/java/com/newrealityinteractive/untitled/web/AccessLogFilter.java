@@ -1,23 +1,32 @@
 package com.newrealityinteractive.untitled.web;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
+import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.spi.LoggingEventBuilder;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.http.server.reactive.ServerHttpResponseDecorator;
 import org.springframework.stereotype.Component;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 
@@ -26,8 +35,12 @@ import reactor.core.publisher.SignalType;
  * through the {@value #LOGGER_NAME} logger. The logger is at {@code WARN} by default; setting it to
  * {@code INFO} (for example through the actuator {@code loggers} endpoint) turns access logging on
  * without a restart. The message repeats every field ({@code GET /path?query 200 12.345ms
- * id=<request id>}) so plain-text console output, which drops key-value pairs, shows them too.
- * Headers, cookies, bodies and the principal are never logged.
+ * X-Request-Id=<id> body=<json>}) so plain-text console output, which drops key-value pairs, shows
+ * them too.
+ *
+ * <p>JSON response bodies are logged, cut at {@value #MAX_BODY_BYTES} bytes; other response bodies
+ * (Prometheus text, HTML, streams) are not. Request headers, cookies, request bodies and the
+ * principal are never logged.
  *
  * <p>Every response carries an {@value #REQUEST_ID_HEADER} header: the caller's own value when it
  * is well formed, otherwise a generated UUID.
@@ -37,6 +50,7 @@ public class AccessLogFilter implements WebFilter, Ordered {
 
   static final String LOGGER_NAME = "http.access";
   static final String REQUEST_ID_HEADER = "X-Request-Id";
+  static final int MAX_BODY_BYTES = 8192;
 
   private static final Pattern VALID_REQUEST_ID = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
   private static final Logger log = LoggerFactory.getLogger(LOGGER_NAME);
@@ -55,13 +69,14 @@ public class AccessLogFilter implements WebFilter, Ordered {
       return chain.filter(exchange);
     }
     long start = System.nanoTime();
+    BodyCapture body = new BodyCapture(exchange.getResponse());
     return chain
-        .filter(exchange)
-        .doOnError(error -> write(exchange, requestId, start, errorStatus(exchange, error)))
+        .filter(exchange.mutate().response(body).build())
+        .doOnError(error -> write(exchange, requestId, start, errorStatus(exchange, error), body))
         .doFinally(
             signal -> {
               if (signal != SignalType.ON_ERROR) {
-                write(exchange, requestId, start, exchange.getResponse().getStatusCode());
+                write(exchange, requestId, start, exchange.getResponse().getStatusCode(), body);
               }
             });
   }
@@ -90,7 +105,11 @@ public class AccessLogFilter implements WebFilter, Ordered {
   }
 
   private static void write(
-      ServerWebExchange exchange, String requestId, long start, @Nullable HttpStatusCode status) {
+      ServerWebExchange exchange,
+      String requestId,
+      long start,
+      @Nullable HttpStatusCode status,
+      BodyCapture body) {
     ServerHttpRequest request = exchange.getRequest();
     String method = request.getMethod().name();
     String path = request.getPath().value();
@@ -108,13 +127,65 @@ public class AccessLogFilter implements WebFilter, Ordered {
     if (status != null) {
       event = event.addKeyValue("http.response.status_code", status.value());
     }
+    String content = body.content();
+    if (content != null) {
+      event =
+          event
+              .addKeyValue("http.response.body.content", content)
+              .addKeyValue("http.response.body.bytes", body.bytes());
+    }
     event.log(
-        "{} {}{} {} {}ms id={}",
+        "{} {}{} {} {}ms {}={}{}",
         method,
         path,
         query != null ? "?" + query : "",
         status != null ? status.value() : "-",
         String.format(Locale.ROOT, "%.3f", duration / 1_000_000.0),
-        requestId);
+        REQUEST_ID_HEADER,
+        requestId,
+        content != null ? " body=" + content : "");
+  }
+
+  /**
+   * Copies the first {@value #MAX_BODY_BYTES} bytes of a JSON response body as it is written,
+   * without consuming it. Bodies written with {@code writeAndFlushWith} (streams) are not copied.
+   */
+  static final class BodyCapture extends ServerHttpResponseDecorator {
+
+    private final ByteArrayOutputStream copy = new ByteArrayOutputStream();
+    private long bytes;
+    private boolean json;
+
+    BodyCapture(ServerHttpResponse delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public Mono<Void> writeWith(Publisher<? extends DataBuffer> body) {
+      MediaType type = getHeaders().getContentType();
+      json =
+          type != null && (type.getSubtype().equals("json") || type.getSubtype().endsWith("+json"));
+      return json ? super.writeWith(Flux.from(body).doOnNext(this::copy)) : super.writeWith(body);
+    }
+
+    private synchronized void copy(DataBuffer buffer) {
+      bytes += buffer.readableByteCount();
+      try (DataBuffer.ByteBufferIterator views = buffer.readableByteBuffers()) {
+        while (views.hasNext() && copy.size() < MAX_BODY_BYTES) {
+          ByteBuffer view = views.next();
+          byte[] chunk = new byte[Math.min(view.remaining(), MAX_BODY_BYTES - copy.size())];
+          view.get(chunk);
+          copy.writeBytes(chunk);
+        }
+      }
+    }
+
+    synchronized @Nullable String content() {
+      return json && bytes > 0 ? copy.toString(StandardCharsets.UTF_8) : null;
+    }
+
+    synchronized long bytes() {
+      return bytes;
+    }
   }
 }
