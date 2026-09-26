@@ -1,7 +1,4 @@
 - source_spec: `/Users/bpmericle/Work/new-reality-interactive/github/untitled/_bmad-output/implementation-artifacts/spec-reactive-spring-boot-scaffold.md`
-  summary: Generate a CycloneDX SBOM during the build (Boot-managed cyclonedx-maven-plugin, pinned to latest) and expose it via the actuator sbom endpoint.
-  evidence: Split at user request to keep the scaffold spec under the 1600-token scope guideline; supply-chain tooling is separately shippable.
-- source_spec: `/Users/bpmericle/Work/new-reality-interactive/github/untitled/_bmad-output/implementation-artifacts/spec-reactive-spring-boot-scaffold.md`
   summary: Add an application-local.yaml profile convention for developer runs (local credentials, human-readable logs) and document it in the README.
   evidence: Split at user request to keep the scaffold spec under the 1600-token scope guideline; developer-convenience profile is separately shippable.
 - source_spec: none

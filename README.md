@@ -1,8 +1,8 @@
 # untitled
 
 Reactive Spring Boot 4.1 service (Java 25, Spring WebFlux) with Actuator health probes, a
-generated OpenAPI 3.1 spec, ECS JSON logs, Prometheus metrics, HTTP Basic security and enforced
-test coverage.
+generated OpenAPI 3.1 spec, ECS JSON logs, Prometheus metrics, a CycloneDX SBOM, HTTP Basic security
+and enforced test coverage.
 
 ## Requirements
 
@@ -18,15 +18,16 @@ test coverage.
 `verify` runs, in order:
 
 1. Enforcer: JDK 25, Maven >= 3.9, no SNAPSHOT dependencies or plugins, upper-bound dependency versions.
-2. Unit tests (Surefire), with JaCoCo collecting coverage.
-3. Packages the app, then starts it (`spring-boot:start`, profile `it`) on free ports reserved for the
+2. Writes a CycloneDX SBOM of the dependencies (see [SBOM](#sbom)) into `target/classes`.
+3. Unit tests (Surefire), with JaCoCo collecting coverage.
+4. Packages the app, then starts it (`spring-boot:start`, profile `it`) on free ports reserved for the
    build, so nothing needs 8080/8081 to be free.
-4. Integration tests (`*IT`, Failsafe) against the running app, and generation of
+5. Integration tests (`*IT`, Failsafe) against the running app, and generation of
    `target/openapi/openapi.json` from `/v3/api-docs`.
-5. Stops the app, merges unit + integration coverage, writes the report to `target/site/jacoco/`
+6. Stops the app, merges unit + integration coverage, writes the report to `target/site/jacoco/`
    and fails below 80% line or branch coverage.
-6. Fails if `target/openapi/openapi.json` differs from the committed `docs/openapi.json`.
-7. Spotless: fails if any file is not formatted (see [Formatting](#formatting)). This step also
+7. Fails if `target/openapi/openapi.json` differs from the committed `docs/openapi.json`.
+8. Spotless: fails if any file is not formatted (see [Formatting](#formatting)). This step also
    runs under `-DskipTests`/`-DskipITs`.
 
 ## Run
@@ -57,6 +58,8 @@ drift and coverage checks.
 | `GET /actuator/health/readiness` | 8081 | public; lists components, no details |
 | `GET /actuator/info` | 8081 | public |
 | `GET /actuator/prometheus` | 8081 | public; Prometheus scrape format |
+| `GET /actuator/sbom` | 8081 | HTTP Basic; lists SBOM ids |
+| `GET /actuator/sbom/application` | 8081 | HTTP Basic; CycloneDX JSON |
 
 Every other path on 8081 needs HTTP Basic credentials, and only the endpoints above are exposed.
 Health, info and Prometheus metrics are public on 8081 so probes and scrapers need no credentials.
@@ -70,6 +73,25 @@ curl -u "$APP_SECURITY_USERNAME:$APP_SECURITY_PASSWORD" 'http://localhost:8080/a
 
 Invalid input (`name` missing, blank or longer than 100 characters) returns `400` with an
 `application/problem+json` body.
+
+## SBOM
+
+Every Maven build writes a [CycloneDX](https://cyclonedx.org/) JSON software bill of materials of
+the dependencies to `target/classes/META-INF/sbom/application.cdx.json`, so it is packaged inside
+the jar. Test-scope dependencies are left out, and the configuration processor runs from the
+compiler plugin's `annotationProcessorPaths` rather than as a dependency, so the SBOM lists what the
+jar ships. The Spring Boot parent configures `cyclonedx-maven-plugin`; the build only switches it
+on. A running service serves its own SBOM on 8081, behind the API's HTTP Basic credentials
+because it lists exact library versions:
+
+```sh
+curl -u "$APP_SECURITY_USERNAME:$APP_SECURITY_PASSWORD" http://localhost:8081/actuator/sbom/application
+unzip -p target/untitled-*.jar META-INF/sbom/application.cdx.json
+```
+
+`GET /actuator/sbom` lists the available SBOM ids (`application`). The file comes from the Maven
+build, so an app started from classes an IDE compiled on its own has no SBOM: the id list is empty
+and `/actuator/sbom/application` returns 404.
 
 ## Logging
 
