@@ -32,17 +32,43 @@ and enforced test coverage.
 
 ## Run
 
-The API user's credentials have no default; startup fails without them.
+On a developer machine, start the app:
+
+```sh
+./mvnw spring-boot:run
+```
+
+It keeps running in the foreground. Once it is up, call it from a second terminal:
+
+```sh
+curl -u local:local 'http://localhost:8080/api/v1/greetings?name=Ada'
+```
+
+`spring-boot:run` activates the `local` profile by default (the `spring-boot.run.profiles` property
+in `pom.xml`). It reads `config/application-local.yaml`, which sets throwaway credentials
+`local`/`local` and plain-text console logs. Spring Boot picks the file up from `./config/` in the
+working directory, so it is never packaged into the jar; run from the project root. To use it with
+the jar (build it first with `./mvnw package` or `./mvnw verify`):
+
+```sh
+java -jar target/untitled-*.jar --spring.profiles.active=local
+```
+
+`APP_SECURITY_USERNAME` / `APP_SECURITY_PASSWORD` still override the file's credentials.
+
+Without the `local` profile (the default for `java -jar`, or `./mvnw spring-boot:run
+-Dspring-boot.run.profiles=`), the API user's credentials have no default and startup fails
+without them. The jar must be built first (`./mvnw package` or `./mvnw verify`):
 
 ```sh
 export APP_SECURITY_USERNAME=me
 export APP_SECURITY_PASSWORD=change-me
-./mvnw spring-boot:run
+java -jar target/untitled-*.jar
 ```
 
 They can also be set as `app.security.username` / `app.security.password` in any Spring Boot
 configuration source. The build's throwaway credentials live in `src/test/resources/application-it.yaml`
-and are not packaged into the jar.
+and are not packaged into the jar; the build runs the app with the `it` profile only.
 
 `./mvnw verify -DskipTests` (or `-DskipITs`) also skips starting the app, generating the spec and the
 drift and coverage checks.
@@ -96,11 +122,11 @@ and `/actuator/sbom/application` returns 404.
 ## Logging
 
 Console logs are structured JSON in the [Elastic Common Schema](https://www.elastic.co/guide/en/ecs/current/index.html)
-(ECS) format, one object per line, with `service.name` set from `spring.application.name`. To get
-plain-text logs for a single run, set the format to empty:
+(ECS) format, one object per line, with `service.name` set from `spring.application.name`. The
+`local` profile (see [Run](#run)) switches to Spring Boot's plain-text format. To get plain-text
+logs for a single run without it, set the format to empty:
 
 ```sh
-./mvnw spring-boot:run -Dspring-boot.run.arguments=--logging.structured.format.console=
 java -jar target/untitled-*.jar --logging.structured.format.console=
 LOGGING_STRUCTURED_FORMAT_CONSOLE= java -jar target/untitled-*.jar
 ```
@@ -109,11 +135,11 @@ LOGGING_STRUCTURED_FORMAT_CONSOLE= java -jar target/untitled-*.jar
 
 Java is formatted with [google-java-format](https://github.com/google/google-java-format) (Google
 style: 2-space indent, 100 columns), with unused imports removed and annotations formatted (type
-annotations kept on the same line as the type). `pom.xml`, `src/**/*.yaml`, `src/**/*.yml`, the
-root `*.md` files, `.editorconfig`, `.gitattributes`, `.gitignore` and `.mvn/**/*.properties` get
-trailing whitespace trimmed, a final newline and spaces instead of tabs. `docs/openapi.json` is
-not checked: it is generated and compared byte for byte. If `verify` fails at `spotless:check`,
-fix the files with:
+annotations kept on the same line as the type). `pom.xml`, `src/**/*.yaml`, `src/**/*.yml`,
+`config/**/*.yaml`, `config/**/*.yml`, the root `*.md` files, `.editorconfig`, `.gitattributes`,
+`.gitignore` and `.mvn/**/*.properties` get trailing whitespace trimmed, a final newline and
+spaces instead of tabs. `docs/openapi.json` is not checked: it is generated and compared byte for
+byte. If `verify` fails at `spotless:check`, fix the files with:
 
 ```sh
 ./mvnw spotless:apply

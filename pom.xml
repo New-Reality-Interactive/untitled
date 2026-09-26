@@ -25,6 +25,8 @@
         <!-- -DskipTests or -DskipITs also skips starting the app, spec generation, drift and coverage checks. -->
         <skipTests>false</skipTests>
         <skipITs>${skipTests}</skipITs>
+        <!-- ./mvnw spring-boot:run uses the developer profile (config/application-local.yaml); -Dspring-boot.run.profiles= turns it off. -->
+        <spring-boot.run.profiles>local</spring-boot.run.profiles>
 
         <!-- Libraries not managed by Spring Boot -->
         <springdoc.version>3.1.1</springdoc.version>
@@ -259,9 +261,8 @@
                             <skip>${skipITs}</skip>
                             <jmxPort>${it.jmx.port}</jmxPort>
                             <jvmArguments>${jacoco.it.agent} ${native.access.arg}</jvmArguments>
-                            <profiles>
-                                <profile>it</profile>
-                            </profiles>
+                            <!-- Scalar form on purpose: with <profile> child elements Maven also evaluates ${spring-boot.run.profiles} (local) and it wins. -->
+                            <profiles>it</profiles>
                             <arguments>
                                 <argument>--server.port=${it.app.port}</argument>
                                 <argument>--management.server.port=${it.management.port}</argument>
@@ -454,6 +455,8 @@
                                 <include>pom.xml</include>
                                 <include>src/**/*.yaml</include>
                                 <include>src/**/*.yml</include>
+                                <include>config/**/*.yaml</include>
+                                <include>config/**/*.yml</include>
                                 <include>*.md</include>
                                 <include>.editorconfig</include>
                                 <include>.gitattributes</include>
